@@ -153,8 +153,9 @@ def fit_task1_preprocessor(
     """
     Fit a Task 1 normalizer using the training split only.
 
-    The detector-reference recipe uses channel-wise log/percentile scaling with
-    a gentle boost on the top-end activations so sparse jet cores stay visible.
+    The detector-reference recipe uses sparse-preserving channel-wise
+    log/percentile scaling for all detector channels, with an optional gentle
+    boost on one channel's top-end activations so jet cores stay visible.
     """
     preprocess_mode = normalize_preprocess_mode(preprocess_mode)
     params: List[Dict[str, float]] = []
@@ -168,38 +169,22 @@ def fit_task1_preprocessor(
 
     for ch in range(X.shape[1]):
         channel = X[:, ch]
-        nonzero = channel[channel > 0]
 
         if preprocess_mode == "detector_reference":
-            energy_channel = int(boost_channel)
-            if ch == energy_channel:
-                transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
-                transformed_nonzero = transformed[channel > 0]
-                if transformed_nonzero.size:
-                    p_low, p_high = np.percentile(transformed_nonzero, [1.0, 99.9])
-                else:
-                    p_low, p_high = 0.0, 1.0
-                params.append({
-                    "type": "detector_reference_log",
-                    "p_low": float(p_low),
-                    "scale": max(float(p_high - p_low), 1e-8),
-                    "boost_threshold": 0.75,
-                    "boost_factor": float(boost_factor),
-                    "energy_channel": energy_channel,
-                })
+            transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
+            transformed_nonzero = transformed[channel > 0]
+            if transformed_nonzero.size:
+                p_low, p_high = np.percentile(transformed_nonzero, [1.0, 99.9])
             else:
-                mean = float(np.mean(channel))
-                std = float(np.std(channel))
-                if std > 1e-10:
-                    params.append({
-                        "type": "detector_reference_standard",
-                        "mean": mean,
-                        "std_scale": max(3.0 * std, 1e-8),
-                    })
-                else:
-                    params.append({
-                        "type": "detector_reference_identity",
-                    })
+                p_low, p_high = 0.0, 1.0
+            params.append({
+                "type": "detector_reference_log",
+                "p_low": float(p_low),
+                "scale": max(float(p_high - p_low), 1e-8),
+                "boost_threshold": 0.75,
+                "boost_factor": float(boost_factor),
+                "apply_boost": bool(ch == int(boost_channel)),
+            })
         elif preprocess_mode == "robust_log_channelwise":
             transformed = np.log1p(channel)
             transformed_nonzero = transformed[channel > 0]
@@ -238,15 +223,11 @@ def apply_task1_preprocessor(
         if kind == "detector_reference_log":
             transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
             normalized = (transformed - spec["p_low"]) / spec["scale"]
-            high_mask = normalized > spec["boost_threshold"]
-            normalized[high_mask] = spec["boost_threshold"] + (
-                normalized[high_mask] - spec["boost_threshold"]
-            ) * spec["boost_factor"]
-        elif kind == "detector_reference_standard":
-            normalized = (channel - spec["mean"]) / spec["std_scale"]
-            normalized = np.clip(normalized, -1.0, 1.0) * 0.5 + 0.5
-        elif kind == "detector_reference_identity":
-            normalized = channel
+            if spec.get("apply_boost", False):
+                high_mask = normalized > spec["boost_threshold"]
+                normalized[high_mask] = spec["boost_threshold"] + (
+                    normalized[high_mask] - spec["boost_threshold"]
+                ) * spec["boost_factor"]
         elif kind == "robust_log_channelwise":
             transformed = np.log1p(channel)
             normalized = (transformed - spec["p_low"]) / spec["scale"]
