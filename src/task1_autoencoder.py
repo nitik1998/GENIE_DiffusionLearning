@@ -98,15 +98,25 @@ def normalize_training_recipe(training_recipe: str) -> str:
 
 
 class Task1Dataset(Dataset):
-    def __init__(self, X: np.ndarray, y: np.ndarray) -> None:
-        self.X = torch.from_numpy(X).float()
-        self.y = torch.from_numpy(y).long()
+    def __init__(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        indices: np.ndarray,
+        preprocessor_params: List[Dict[str, float]],
+    ) -> None:
+        self.X = X
+        self.indices = np.asarray(indices, dtype=np.int64)
+        self.y = torch.from_numpy(y[self.indices]).long()
+        self.preprocessor_params = preprocessor_params
 
     def __len__(self) -> int:
         return len(self.y)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.X[idx], self.y[idx]
+        sample = self.X[self.indices[idx] : self.indices[idx] + 1]
+        sample = apply_task1_preprocessor(sample, self.preprocessor_params)[0]
+        return torch.from_numpy(sample).float(), self.y[idx]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -863,9 +873,9 @@ def build_datasets(
         boost_channel=settings["boost_channel"],
         boost_factor=settings["boost_factor"],
     )
-    train_ds = Task1Dataset(apply_task1_preprocessor(X[train_idx], preprocessor_params), y[train_idx])
-    val_ds = Task1Dataset(apply_task1_preprocessor(X[val_idx], preprocessor_params), y[val_idx])
-    test_ds = Task1Dataset(apply_task1_preprocessor(X[test_idx], preprocessor_params), y[test_idx])
+    train_ds = Task1Dataset(X, y, train_idx, preprocessor_params)
+    val_ds = Task1Dataset(X, y, val_idx, preprocessor_params)
+    test_ds = Task1Dataset(X, y, test_idx, preprocessor_params)
     return train_ds, val_ds, test_ds, preprocessor_params
 
 
