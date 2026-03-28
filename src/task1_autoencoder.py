@@ -398,7 +398,7 @@ def train_epoch_notebook_style(
             variational=variational,
         )
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f"Warning: Loss is {loss.item()}, skipping batch")
+            print(f"Warning: Loss is {loss.item()}, skipping batch", flush=True)
             continue
 
         optimizer.zero_grad()
@@ -1217,15 +1217,16 @@ def run_experiment(
                 gap = vl_loss / (tr_loss + 1e-10)
                 pbar.set_postfix(train=f"{tr_loss:.6f}", val=f"{vl_loss:.6f}", gap=f"{gap:.2f}x")
                 if training_recipe == "detector_reference":
-                    print(f"Epoch {epoch}/{target_epochs}:")
-                    print(f"  Train Loss: {tr_loss:.6f} (Recon: {tr_recon_loss:.6f}, KL: {tr_kl_loss:.6f})")
-                    print(f"  Val Loss: {vl_loss:.6f} (Recon: {vl_recon_loss:.6f}, KL: {vl_kl_loss:.6f})")
-                    print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.6f}, KL Weight: {beta:.6f}{marker}")
+                    print(f"Epoch {epoch}/{target_epochs}:", flush=True)
+                    print(f"  Train Loss: {tr_loss:.6f} (Recon: {tr_recon_loss:.6f}, KL: {tr_kl_loss:.6f})", flush=True)
+                    print(f"  Val Loss: {vl_loss:.6f} (Recon: {vl_recon_loss:.6f}, KL: {vl_kl_loss:.6f})", flush=True)
+                    print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.6f}, KL Weight: {beta:.6f}{marker}", flush=True)
                 else:
                     print(
                         f"[{exp_name}] Epoch {epoch:03d}/{target_epochs} | "
                         f"Train: {tr_loss:.6f} | Val: {vl_loss:.6f} | "
-                        f"Gap: {gap:.2f}x | KL: {beta:.2e} | LR: {optimizer.param_groups[0]['lr']:.1e}{marker}"
+                        f"Gap: {gap:.2f}x | KL: {beta:.2e} | LR: {optimizer.param_groups[0]['lr']:.1e}{marker}",
+                        flush=True,
                     )
 
                 if training_recipe == "detector_reference" and ((epoch % 5 == 0) or epoch == target_epochs):
@@ -1243,7 +1244,7 @@ def run_experiment(
                             )
 
                 if patience_counter >= args.patience and args.patience > 0:
-                    print(f"[{exp_name}] Early stopping at epoch {epoch} (no improvement for {args.patience} epochs)")
+                    print(f"[{exp_name}] Early stopping at epoch {epoch} (no improvement for {args.patience} epochs)", flush=True)
                     break
             break
         except RuntimeError as exc:
@@ -1255,7 +1256,7 @@ def run_experiment(
 
     if best_state is not None and model is not None:
         model.load_state_dict(best_state)
-        print(f"[{exp_name}] Restored best model (Val Loss: {best_val_loss:.6f})")
+        print(f"[{exp_name}] Restored best model (Val Loss: {best_val_loss:.6f})", flush=True)
 
     eval_use_mean = bool(settings.get("eval_use_mean", True))
     if training_recipe == "detector_reference" and len(val_loader) > 0:
