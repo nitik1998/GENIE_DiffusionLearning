@@ -42,8 +42,6 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score, confusion_matrix, f1_score
 from tqdm import tqdm
-from joblib import Parallel, delayed
-
 from torch_geometric.data import Data, Batch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -115,8 +113,14 @@ def augment_point_features(points: np.ndarray) -> np.ndarray:
 
 
 def pooled_graph_features(dataset: "JetGraphDataset") -> Tuple[np.ndarray, np.ndarray]:
-    feats = np.stack([graph.x.numpy().mean(axis=0) for graph in dataset.graphs], axis=0)
-    labels = np.array([int(graph.y.item()) for graph in dataset.graphs], dtype=np.int64)
+    feats = []
+    labels = []
+    for i in range(len(dataset)):
+        graph = dataset[i]
+        feats.append(graph.x.numpy().mean(axis=0))
+        labels.append(int(graph.y.item()))
+    feats = np.stack(feats, axis=0)
+    labels = np.array(labels, dtype=np.int64)
     return feats, labels
 
 
@@ -148,23 +152,20 @@ def evaluate_logistic_baseline(
 
 class JetGraphDataset(Dataset):
     """
-    Pre-computes graph representations from jet images.
+    Lazily builds graph representations from jet images.
 
-    Parallelised using joblib for fast initialisation.
-    Each image is converted to a point cloud and then to a k-NN graph.
+    This avoids materialising the full graph set in RAM up front, which is
+    important for full-dataset Colab runs.
     """
 
     def __init__(
         self, X: np.ndarray, y: np.ndarray, knn_k: int = 8, tag: str = "data"
     ) -> None:
-        logger.info("Building %s graphs (n=%s, k=%d)...", tag, f"{len(y):,}", knn_k)
-        channel_scales = compute_channel_scales(X, use_log1p=True)
-        X_norm = normalize_channels(X, channel_scales, use_log1p=True)
-
-        self.graphs = Parallel(n_jobs=-1, prefer="threads")(
-            delayed(self._build_one)(X_norm[i], int(y[i]), knn_k)
-            for i in tqdm(range(len(y)), leave=False, desc=f"Graphs ({tag})")
-        )
+        logger.info("Preparing %s graph dataset (n=%s, k=%d)...", tag, f"{len(y):,}", knn_k)
+        self.X = X
+        self.y = y
+        self.knn_k = knn_k
+        self.channel_scales = compute_channel_scales(X, use_log1p=True)
 
     @staticmethod
     def _build_one(img: np.ndarray, label: int, knn_k: int) -> Data:
@@ -173,10 +174,13 @@ class JetGraphDataset(Dataset):
         return build_knn_graph(pts_tensor, label, k=knn_k)
 
     def __len__(self) -> int:
-        return len(self.graphs)
+        return len(self.y)
 
     def __getitem__(self, idx: int) -> Data:
-        return self.graphs[idx]
+        img = normalize_channels(
+            self.X[idx : idx + 1], self.channel_scales, use_log1p=True
+        )[0]
+        return self._build_one(img, int(self.y[idx]), self.knn_k)
 
 
 def collate_graphs(batch: List[Data]) -> Batch:
