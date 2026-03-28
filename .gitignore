@@ -1,0 +1,39 @@
+# Data
+data/
+*.hdf5
+*.h5
+*.parquet
+
+# Outputs
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Checkpoints
+*.pt
+*.pth
+checkpoints/
+
+context.md
