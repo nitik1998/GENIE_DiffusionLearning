@@ -153,8 +153,9 @@ def fit_task1_preprocessor(
     """
     Fit a Task 1 normalizer using the training split only.
 
-    The detector-reference recipe uses channel-wise log/percentile scaling with
-    a gentle boost on the top-end activations so sparse jet cores stay visible.
+    The detector-reference recipe uses sparse-preserving channel-wise
+    log/percentile scaling for all detector channels, with an optional gentle
+    boost on one channel's top-end activations so jet cores stay visible.
     """
     preprocess_mode = normalize_preprocess_mode(preprocess_mode)
     params: List[Dict[str, float]] = []
@@ -168,38 +169,22 @@ def fit_task1_preprocessor(
 
     for ch in range(X.shape[1]):
         channel = X[:, ch]
-        nonzero = channel[channel > 0]
 
         if preprocess_mode == "detector_reference":
-            energy_channel = int(boost_channel)
-            if ch == energy_channel:
-                transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
-                transformed_nonzero = transformed[channel > 0]
-                if transformed_nonzero.size:
-                    p_low, p_high = np.percentile(transformed_nonzero, [1.0, 99.9])
-                else:
-                    p_low, p_high = 0.0, 1.0
-                params.append({
-                    "type": "detector_reference_log",
-                    "p_low": float(p_low),
-                    "scale": max(float(p_high - p_low), 1e-8),
-                    "boost_threshold": 0.75,
-                    "boost_factor": float(boost_factor),
-                    "energy_channel": energy_channel,
-                })
+            transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
+            transformed_nonzero = transformed[channel > 0]
+            if transformed_nonzero.size:
+                p_low, p_high = np.percentile(transformed_nonzero, [1.0, 99.9])
             else:
-                mean = float(np.mean(channel))
-                std = float(np.std(channel))
-                if std > 1e-10:
-                    params.append({
-                        "type": "detector_reference_standard",
-                        "mean": mean,
-                        "std_scale": max(3.0 * std, 1e-8),
-                    })
-                else:
-                    params.append({
-                        "type": "detector_reference_identity",
-                    })
+                p_low, p_high = 0.0, 1.0
+            params.append({
+                "type": "detector_reference_log",
+                "p_low": float(p_low),
+                "scale": max(float(p_high - p_low), 1e-8),
+                "boost_threshold": 0.75,
+                "boost_factor": float(boost_factor),
+                "apply_boost": bool(ch == int(boost_channel)),
+            })
         elif preprocess_mode == "robust_log_channelwise":
             transformed = np.log1p(channel)
             transformed_nonzero = transformed[channel > 0]
@@ -238,15 +223,11 @@ def apply_task1_preprocessor(
         if kind == "detector_reference_log":
             transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
             normalized = (transformed - spec["p_low"]) / spec["scale"]
-            high_mask = normalized > spec["boost_threshold"]
-            normalized[high_mask] = spec["boost_threshold"] + (
-                normalized[high_mask] - spec["boost_threshold"]
-            ) * spec["boost_factor"]
-        elif kind == "detector_reference_standard":
-            normalized = (channel - spec["mean"]) / spec["std_scale"]
-            normalized = np.clip(normalized, -1.0, 1.0) * 0.5 + 0.5
-        elif kind == "detector_reference_identity":
-            normalized = channel
+            if spec.get("apply_boost", False):
+                high_mask = normalized > spec["boost_threshold"]
+                normalized[high_mask] = spec["boost_threshold"] + (
+                    normalized[high_mask] - spec["boost_threshold"]
+                ) * spec["boost_factor"]
         elif kind == "robust_log_channelwise":
             transformed = np.log1p(channel)
             normalized = (transformed - spec["p_low"]) / spec["scale"]
@@ -417,7 +398,7 @@ def train_epoch_notebook_style(
             variational=variational,
         )
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f"Warning: Loss is {loss.item()}, skipping batch")
+            print(f"Warning: Loss is {loss.item()}, skipping batch", flush=True)
             continue
 
         optimizer.zero_grad()
@@ -1236,15 +1217,16 @@ def run_experiment(
                 gap = vl_loss / (tr_loss + 1e-10)
                 pbar.set_postfix(train=f"{tr_loss:.6f}", val=f"{vl_loss:.6f}", gap=f"{gap:.2f}x")
                 if training_recipe == "detector_reference":
-                    print(f"Epoch {epoch}/{target_epochs}:")
-                    print(f"  Train Loss: {tr_loss:.6f} (Recon: {tr_recon_loss:.6f}, KL: {tr_kl_loss:.6f})")
-                    print(f"  Val Loss: {vl_loss:.6f} (Recon: {vl_recon_loss:.6f}, KL: {vl_kl_loss:.6f})")
-                    print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.6f}, KL Weight: {beta:.6f}{marker}")
+                    print(f"Epoch {epoch}/{target_epochs}:", flush=True)
+                    print(f"  Train Loss: {tr_loss:.6f} (Recon: {tr_recon_loss:.6f}, KL: {tr_kl_loss:.6f})", flush=True)
+                    print(f"  Val Loss: {vl_loss:.6f} (Recon: {vl_recon_loss:.6f}, KL: {vl_kl_loss:.6f})", flush=True)
+                    print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.6f}, KL Weight: {beta:.6f}{marker}", flush=True)
                 else:
                     print(
                         f"[{exp_name}] Epoch {epoch:03d}/{target_epochs} | "
                         f"Train: {tr_loss:.6f} | Val: {vl_loss:.6f} | "
-                        f"Gap: {gap:.2f}x | KL: {beta:.2e} | LR: {optimizer.param_groups[0]['lr']:.1e}{marker}"
+                        f"Gap: {gap:.2f}x | KL: {beta:.2e} | LR: {optimizer.param_groups[0]['lr']:.1e}{marker}",
+                        flush=True,
                     )
 
                 if training_recipe == "detector_reference" and ((epoch % 5 == 0) or epoch == target_epochs):
@@ -1262,7 +1244,7 @@ def run_experiment(
                             )
 
                 if patience_counter >= args.patience and args.patience > 0:
-                    print(f"[{exp_name}] Early stopping at epoch {epoch} (no improvement for {args.patience} epochs)")
+                    print(f"[{exp_name}] Early stopping at epoch {epoch} (no improvement for {args.patience} epochs)", flush=True)
                     break
             break
         except RuntimeError as exc:
@@ -1274,7 +1256,7 @@ def run_experiment(
 
     if best_state is not None and model is not None:
         model.load_state_dict(best_state)
-        print(f"[{exp_name}] Restored best model (Val Loss: {best_val_loss:.6f})")
+        print(f"[{exp_name}] Restored best model (Val Loss: {best_val_loss:.6f})", flush=True)
 
     eval_use_mean = bool(settings.get("eval_use_mean", True))
     if training_recipe == "detector_reference" and len(val_loader) > 0:

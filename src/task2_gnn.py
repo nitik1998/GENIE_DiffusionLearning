@@ -703,10 +703,14 @@ def main(args: argparse.Namespace) -> None:
             marker = ""
 
         pbar.set_postfix(loss=f"{tr_loss:.4f}", auc=f"{va_auc:.4f}")
-        print(f"Epoch {epoch:03d}/{args.epochs} | Train Loss: {tr_loss:.4f} | Val AUC: {va_auc:.4f} | LR: {scheduler.get_last_lr()[0]:.1e}{marker}")
+        print(
+            f"Epoch {epoch:03d}/{args.epochs} | Train Loss: {tr_loss:.4f} | "
+            f"Val AUC: {va_auc:.4f} | LR: {scheduler.get_last_lr()[0]:.1e}{marker}",
+            flush=True,
+        )
 
         if patience_counter >= args.patience and args.patience > 0:
-            print(f"Early stopping at epoch {epoch} (no AUC improvement for {args.patience} epochs)")
+            print(f"Early stopping at epoch {epoch} (no AUC improvement for {args.patience} epochs)", flush=True)
             break
 
     # Test evaluation
