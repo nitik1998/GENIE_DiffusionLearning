@@ -24,6 +24,65 @@ class UpsampleConvBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.block(x)
 
+
+class ConvAutoEncoder(nn.Module):
+    """
+    Simple convolutional autoencoder matching the Common Task 1 notebook
+    baseline architecture.
+    """
+
+    def __init__(self, in_channels: int = 3) -> None:
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels, 16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+        )
+        self.decoder = nn.Sequential(
+            nn.ConvTranspose2d(32, 64, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(0.1),
+            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(0.1),
+            nn.ConvTranspose2d(32, 16, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(16, in_channels, kernel_size=3, stride=2, padding=1, output_padding=1),
+            nn.Sigmoid(),
+        )
+
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        return self.encoder(x)
+
+    def decode(self, z: torch.Tensor) -> torch.Tensor:
+        x_hat = self.decoder(z)
+        return x_hat[:, :, :125, :125].contiguous()
+
+    def forward(self, x: torch.Tensor):
+        z = self.encode(x)
+        x_hat = self.decode(z)
+        dummy = torch.zeros((x.size(0), 1), device=x.device, dtype=x.dtype)
+        return x_hat, z, dummy
+
+    def reconstruct(self, x: torch.Tensor, use_mean: bool = True) -> torch.Tensor:
+        del use_mean
+        return self.decode(self.encode(x))
+
+    def get_latent(self, x: torch.Tensor) -> torch.Tensor:
+        return self.encode(x)
+
 class ConvVAE(nn.Module):
     """
     Convolutional Variational Autoencoder aligned with the current
