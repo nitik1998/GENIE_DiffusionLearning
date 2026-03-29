@@ -407,11 +407,13 @@ def plot_reconstructions(
 
     for row in range(n_show):
         for ch in range(3):
-            joint = np.concatenate([originals[row, ch].ravel(), recons[row, ch].ravel()])
-            positive = joint[joint > 0]
-            vmax = float(np.percentile(positive, 99.5)) if positive.size else 1e-6
-            axes[row, ch].imshow(originals[row, ch], cmap="hot", vmin=0, vmax=vmax)
-            axes[row, ch + 3].imshow(recons[row, ch], cmap="hot", vmin=0, vmax=vmax)
+            # Use per-channel adaptive vmin = median so background floor appears dark
+            orig_ch = originals[row, ch]
+            recon_ch = recons[row, ch]
+            bg = float(np.median(orig_ch))
+            vmax = max(float(orig_ch.max()), float(recon_ch.max()), bg + 1e-6)
+            axes[row, ch].imshow(orig_ch, cmap="hot", vmin=bg, vmax=vmax)
+            axes[row, ch + 3].imshow(recon_ch, cmap="hot", vmin=bg, vmax=vmax)
 
             if row == 0:
                 axes[row, ch].set_title(f"Original {TASK1_CHANNEL_NAMES[ch]}", fontsize=10)
@@ -540,23 +542,38 @@ def plot_sparse_diagnostics(
 def plot_normalized_inputs(
     dataset: Task1Dataset,
     out_dir: str,
-    n_show: int = 8,
+    n_show: int = 3,
 ) -> None:
-    """Save a quick view of normalized detector inputs."""
+    """Save a side-by-side view: raw detector images vs. normalized model inputs."""
     n_show = min(n_show, len(dataset))
-    imgs = torch.stack([dataset[i][0] for i in range(n_show)]).numpy()
+    norm_imgs = torch.stack([dataset[i][0] for i in range(n_show)]).numpy()
+    raw_imgs = np.stack([dataset.X[dataset.indices[i]] for i in range(n_show)])
 
-    fig, axes = plt.subplots(n_show, 3, figsize=(10, n_show * 2.4), squeeze=False)
-    fig.suptitle("Normalized Input Samples", fontsize=14, fontweight="bold", y=1.01)
+    fig, axes = plt.subplots(n_show, 6, figsize=(22, n_show * 3), squeeze=False)
+    fig.suptitle(
+        "Task 1 — Raw Detector Images vs. Normalized Model Inputs",
+        fontsize=14, fontweight="bold", y=1.02,
+    )
 
     for row in range(n_show):
         for ch in range(3):
-            positive = imgs[row, ch][imgs[row, ch] > 0]
-            vmax = float(np.percentile(positive, 99.5)) if positive.size else 1e-6
-            axes[row, ch].imshow(imgs[row, ch], cmap="hot", vmin=0, vmax=vmax)
+            # Columns 0-2: Raw data (vmax = per-channel max)
+            raw_ch = raw_imgs[row, ch]
+            vmax_raw = max(float(raw_ch.max()), 1e-6)
+            axes[row, ch].imshow(raw_ch, cmap="hot", vmin=0, vmax=vmax_raw)
             axes[row, ch].axis("off")
             if row == 0:
-                axes[row, ch].set_title(TASK1_CHANNEL_NAMES[ch], fontsize=10)
+                axes[row, ch].set_title(f"Raw {TASK1_CHANNEL_NAMES[ch]}", fontsize=10)
+
+            # Columns 3-5: Normalized data
+            # Use median as vmin so the background floor (≈0.5 for mean-centered channels)
+            # appears dark, letting active signal stand out clearly.
+            norm_ch = norm_imgs[row, ch]
+            bg = float(np.median(norm_ch))
+            axes[row, ch + 3].imshow(norm_ch, cmap="hot", vmin=bg, vmax=max(float(norm_ch.max()), bg + 1e-6))
+            axes[row, ch + 3].axis("off")
+            if row == 0:
+                axes[row, ch + 3].set_title(f"Normalized {TASK1_CHANNEL_NAMES[ch]}", fontsize=10)
 
     plt.tight_layout()
     path = os.path.join(out_dir, "normalized_input_samples.png")
