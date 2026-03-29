@@ -36,4 +36,15 @@ Thumbs.db
 *.pth
 checkpoints/
 
+# Legacy archives
+archive/
+notebooks/archive/
+
+# Agent / AI assistant
+.gemini/
+.agents/
+
+# Jupyter
+.ipynb_checkpoints/
+
 context.md

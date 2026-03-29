@@ -80,13 +80,7 @@ def normalize_preprocess_mode(preprocess_mode: str) -> str:
     return alias_map[preprocess_mode]
 
 
-def normalize_training_recipe(training_recipe: str) -> str:
-    alias_map = {
-        "detector_reference": "reference_vae",
-        "reference_vae": "reference_vae",
-        "default": "default",
-    }
-    return alias_map.get(training_recipe, training_recipe)
+
 
 
 class Task1Dataset(Dataset):
@@ -285,54 +279,7 @@ def reconstruct_with_mode(model: nn.Module, imgs: torch.Tensor, use_mean: bool =
     mu, _, _ = model.encode(imgs)
     return model.decode(mu)
 
-def train_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    scaler: torch.amp.GradScaler,
-    device: torch.device,
-    beta: float,
-) -> float:
-    """One training epoch with AMP support using the reference VAE loss."""
-    model.train()
-    total_loss = 0.0
-    for imgs, _ in tqdm(loader, leave=False, desc="Training"):
-        imgs = imgs.to(device, non_blocking=True)
 
-        with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
-            recons, mu, logvar = model(imgs)
-            loss, _, _ = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
-
-        optimizer.zero_grad(set_to_none=True)
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-        scaler.step(optimizer)
-        scaler.update()
-
-        total_loss += loss.item() * imgs.size(0)
-    return total_loss / len(loader.dataset)
-
-
-@torch.no_grad()
-def eval_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    beta: float,
-    eval_use_mean: bool,
-) -> float:
-    """Evaluate without gradient tracking using the reference VAE loss."""
-    model.eval()
-    total_loss = 0.0
-    for imgs, _ in loader:
-        imgs = imgs.to(device, non_blocking=True)
-        with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
-            recons = reconstruct_with_mode(model, imgs, use_mean=eval_use_mean)
-            mu, logvar, _ = model.encode(imgs)
-            loss, _, _ = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
-        total_loss += loss.item() * imgs.size(0)
-    return total_loss / len(loader.dataset)
 
 
 def train_epoch_reference_style(
@@ -654,22 +601,7 @@ def save_task1_reconstruction_samples(
         plt.close()
 
 
-def plot_loss_curve(train_losses: List[float], val_losses: List[float], out_dir: str) -> None:
-    """Training convergence visualization."""
-    fig, ax = plt.subplots(figsize=(8, 5))
-    epochs = range(1, len(train_losses) + 1)
-    ax.plot(epochs, train_losses, label="Train Loss", color="#2563EB", lw=2)
-    ax.plot(epochs, val_losses, label="Val Loss", color="#DC2626", lw=2, ls="--")
-    ax.set_xlabel("Epoch", fontsize=12)
-    ax.set_ylabel("Loss", fontsize=12)
-    ax.set_title("Task 1 — Autoencoder Training Convergence", fontsize=13, fontweight="bold")
-    ax.legend(fontsize=11)
-    ax.grid(alpha=0.3)
 
-    path = os.path.join(out_dir, "training_curves.png")
-    plt.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close()
-    logger.info("Saved loss curve → %s", path)
 
 
 def plot_training_curves_reference_style(
@@ -1047,7 +979,7 @@ def run_experiment(
             return {"exp_name": exp_name, "skipped": True}
     logger.info("Experiment: %s → %s", exp_name, out_dir)
     logger.info("Settings: %s", settings)
-    training_recipe = normalize_training_recipe(str(settings.get("training_recipe", "default")))
+
 
     train_idx, val_idx, test_idx = splits
     train_ds, val_ds, test_ds, preprocessor_params = build_datasets(
@@ -1092,7 +1024,7 @@ def run_experiment(
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, mode="min", factor=0.7, patience=settings["scheduler_patience"], min_lr=1e-6
             )
-            scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
+
 
             logger.info("Starting training for %d epochs (patience=%d, batch=%d)...", target_epochs, args.patience, batch_size)
             train_losses, val_losses = [], []
@@ -1110,40 +1042,28 @@ def run_experiment(
                     settings["beta_max"],
                     warmup_epochs=settings.get("kl_warmup_epochs"),
                 )
-                if training_recipe == "reference_vae":
-                    tr_total, tr_recon, tr_kl, tr_batches = train_epoch_reference_style(
-                        model,
-                        train_loader,
-                        optimizer,
-                        device,
-                        beta,
-                    )
-                    vl_total, vl_recon, vl_kl, vl_batches = eval_epoch_reference_style(
-                        model,
-                        val_loader,
-                        device,
-                        beta,
-                    )
-                    tr_loss = tr_total / (tr_batches * batch_size) if tr_batches > 0 else float("inf")
-                    tr_recon_loss = tr_recon / (tr_batches * batch_size) if tr_batches > 0 else float("inf")
-                    tr_kl_loss = tr_kl / (tr_batches * batch_size) if tr_batches > 0 else float("inf")
-                    vl_loss = vl_total / (vl_batches * batch_size) if vl_batches > 0 else float("inf")
-                    vl_recon_loss = vl_recon / (vl_batches * batch_size) if vl_batches > 0 else float("inf")
-                    vl_kl_loss = vl_kl / (vl_batches * batch_size) if vl_batches > 0 else float("inf")
-                else:
-                    tr_loss = train_epoch(
-                        model, train_loader, optimizer, scaler, device,
-                        beta=beta,
-                    )
-                    tr_recon_loss = tr_loss
-                    tr_kl_loss = 0.0
-                    vl_loss = eval_epoch(
-                        model, val_loader, device,
-                        beta=beta,
-                        eval_use_mean=bool(settings.get("eval_use_mean", True)),
-                    )
-                    vl_recon_loss = vl_loss
-                    vl_kl_loss = 0.0
+                tr_total, tr_recon, tr_kl, tr_batches = train_epoch_reference_style(
+                    model,
+                    train_loader,
+                    optimizer,
+                    device,
+                    beta,
+                )
+                vl_total, vl_recon, vl_kl, vl_batches = eval_epoch_reference_style(
+                    model,
+                    val_loader,
+                    device,
+                    beta,
+                )
+                n_train = len(train_ds)
+                n_val = len(val_ds)
+                tr_loss = tr_total / n_train if tr_batches > 0 else float("inf")
+                tr_recon_loss = tr_recon / n_train if tr_batches > 0 else float("inf")
+                tr_kl_loss = tr_kl / n_train if tr_batches > 0 else float("inf")
+                vl_loss = vl_total / n_val if vl_batches > 0 else float("inf")
+                vl_recon_loss = vl_recon / n_val if vl_batches > 0 else float("inf")
+                vl_kl_loss = vl_kl / n_val if vl_batches > 0 else float("inf")
+
                 scheduler.step(vl_loss)
                 train_losses.append(tr_loss)
                 val_losses.append(vl_loss)
@@ -1161,20 +1081,14 @@ def run_experiment(
 
                 gap = vl_loss / (tr_loss + 1e-10)
                 pbar.set_postfix(train=f"{tr_loss:.6f}", val=f"{vl_loss:.6f}", gap=f"{gap:.2f}x")
-                if training_recipe == "reference_vae":
-                    print(f"Epoch {epoch}/{target_epochs}:", flush=True)
-                    print(f"  Train Loss: {tr_loss:.6f} (Recon: {tr_recon_loss:.6f}, KL: {tr_kl_loss:.6f})", flush=True)
-                    print(f"  Val Loss: {vl_loss:.6f} (Recon: {vl_recon_loss:.6f}, KL: {vl_kl_loss:.6f})", flush=True)
-                    print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.6f}, KL Weight: {beta:.6f}{marker}", flush=True)
-                else:
-                    print(
-                        f"[{exp_name}] Epoch {epoch:03d}/{target_epochs} | "
-                        f"Train: {tr_loss:.6f} | Val: {vl_loss:.6f} | "
-                        f"Gap: {gap:.2f}x | KL: {beta:.2e} | LR: {optimizer.param_groups[0]['lr']:.1e}{marker}",
-                        flush=True,
-                    )
+                print(f"Epoch {epoch}/{target_epochs}:", flush=True)
+                print(f"  Train Loss: {tr_loss:.6f} (Recon: {tr_recon_loss:.6f}, KL: {tr_kl_loss:.6f})", flush=True)
+                print(f"  Val Loss: {vl_loss:.6f} (Recon: {vl_recon_loss:.6f}, KL: {vl_kl_loss:.6f})", flush=True)
+                print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.6f}, KL Weight: {beta:.6f}{marker}", flush=True)
 
-                if training_recipe == "reference_vae" and ((epoch % 5 == 0) or epoch == target_epochs):
+
+                if (epoch % 5 == 0) or epoch == target_epochs:
+
                     with torch.no_grad():
                         if len(val_loader) > 0:
                             sample_batch = next(iter(val_loader))[0].to(device)
@@ -1204,7 +1118,8 @@ def run_experiment(
         print(f"[{exp_name}] Restored best model (Val Loss: {best_val_loss:.6f})", flush=True)
 
     eval_use_mean = bool(settings.get("eval_use_mean", True))
-    if training_recipe == "reference_vae" and len(val_loader) > 0:
+    if len(val_loader) > 0:
+
         with torch.no_grad():
             sample_batch = next(iter(val_loader))[0].to(device)
             reconstructed, _, _ = model(sample_batch)
@@ -1243,10 +1158,8 @@ def run_experiment(
     save_run_metrics(out_dir, metrics, run_params)
 
     plot_normalized_inputs(train_ds, out_dir)
-    if training_recipe == "reference_vae":
-        plot_training_curves_reference_style(train_losses, val_losses, recon_losses, kl_losses, out_dir)
-    else:
-        plot_loss_curve(train_losses, val_losses, out_dir)
+    plot_training_curves_reference_style(train_losses, val_losses, recon_losses, kl_losses, out_dir)
+
     plot_reconstructions(model, val_ds, device, out_dir, use_mean=eval_use_mean)
     plot_reconstructions_with_error(model, val_ds, device, out_dir, use_mean=eval_use_mean)
     plot_sparse_diagnostics(model, val_ds, device, out_dir, threshold=float(best_threshold), use_mean=eval_use_mean)
