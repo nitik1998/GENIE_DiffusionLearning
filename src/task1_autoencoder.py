@@ -1,20 +1,9 @@
 """
-task1_autoencoder.py — Common Task 1
-=======================================
-Train a convolutional autoencoder to learn representations of quark/gluon
-jet images and visualise reconstruction quality.
-
-Usage:
-    # Quick local test (CPU, small subset)
-    python src/task1_autoencoder.py --max-events 100 --epochs 3 --force-cpu
-
-    # Full training (GPU)
-    python src/task1_autoencoder.py --epochs 30 --batch-size 64
-
-Outputs:
-    outputs/task1_reconstructions.png  — side-by-side original vs reconstructed
-    outputs/task1_loss_curve.png       — training convergence plot
-    outputs/task1_metrics.txt          — quantitative evaluation metrics
+task1_autoencoder.py
+====================
+Task 1 autoencoder pipeline aligned to the DeepFalcon notebook baseline,
+kept modular inside the repo and using the requested channel order:
+Tracks, ECAL, HCAL.
 """
 
 import os
@@ -29,68 +18,59 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
-from sklearn.model_selection import train_test_split
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 # Resolve imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.config import (
     setup_logging, set_seed, get_device, ensure_dirs,
-    OUTPUT_DIR,
+    OUTPUT_DIR, get_auto_batch_size,
     DataConfig,
 )
 from src.data_utils import load_dataset
 from src.metrics import reconstruction_summary, sparse_reconstruction_metrics
-from src.models.autoencoder import ConvAutoEncoder, ConvVAE
+from src.models.autoencoder import DeepFalconVAE
 from src.experiment_tracker import log_experiment, save_run_metrics
 
 logger = setup_logging("task1")
 
-TASK1_CHANNEL_NAMES = ("ECAL", "HCAL", "Tracks")
-DEFAULT_EPOCHS = 15
-DEFAULT_BATCH_SIZE = 64
+DEFAULT_EPOCHS = 30
+DEFAULT_BATCH_SIZE = 0
+TASK1_CHANNEL_NAMES = ("Tracks", "ECAL", "HCAL")
 
 EXPERIMENT_PRESETS: Dict[str, Dict[str, Any]] = {
-    "task1_autoencoder_baseline": {
-        "preprocess_mode": "common_task1",
+    "task1_autoencoder": {
+        "preprocess_mode": "detector_reference",
         "recon_loss": "mse",
-        "recon_mix_alpha": 0.0,
-        "beta_max": 0.0,
-        "kl_warmup_epochs": 0,
-        "nonzero_weight": 0.0,
-        "use_transpose_decoder": False,
-        "latent_dim": 32,
-        "lr": 1e-4,
-        "weight_decay": 1e-4,
-        "scheduler_patience": 2,
-        "epochs_override": 15,
-        "batch_size_override": 64,
-        "variational": False,
+        "recon_mix_alpha": 0.7,
+        "beta_max": 1e-2,
+        "kl_warmup_epochs": 100,
+        "nonzero_weight": 4.0,
+        "use_transpose_decoder": True,
+        "latent_dim": 256,
+        "lr": 1e-3,
+        "scheduler_patience": 5,
+        "epochs_override": 200,
+        "batch_size_override": 16,
+        "variational": True,
         "boost_channel": 0,
-        "boost_factor": 1.0,
+        "boost_factor": 1.5,
         "decoder_batchnorm": True,
         "output_bias_init": 0.0,
         "eval_thresholds": [0.05],
         "eval_use_mean": False,
-        "optimizer": "adamw",
-        "training_recipe": "common_task1",
-        "model_type": "common_task1_autoencoder",
-        "patience_override": 3,
-        "val_frac": 0.15,
-        "test_frac": 0.15,
-        "percentile_ref_samples": 5000,
-        "percentile": 99.9,
+        "optimizer": "adam",
+        "training_recipe": "reference_vae",
     },
-    "task1_image_baseline": {},
 }
 
 
 def normalize_preprocess_mode(preprocess_mode: str) -> str:
     alias_map = {
-        "common_task1": "common_task1",
         "detector_reference": "detector_reference",
         "global_logmax": "global_logmax",
         "robust_log_channelwise": "robust_log_channelwise",
@@ -102,14 +82,11 @@ def normalize_preprocess_mode(preprocess_mode: str) -> str:
 
 def normalize_training_recipe(training_recipe: str) -> str:
     alias_map = {
-        "common_task1": "common_task1",
-        "detector_reference": "detector_reference",
+        "detector_reference": "reference_vae",
+        "reference_vae": "reference_vae",
         "default": "default",
     }
     return alias_map.get(training_recipe, training_recipe)
-
-
-EXPERIMENT_PRESETS["task1_image_baseline"] = dict(EXPERIMENT_PRESETS["task1_autoencoder_baseline"])
 
 
 class Task1Dataset(Dataset):
@@ -134,66 +111,9 @@ class Task1Dataset(Dataset):
         return torch.from_numpy(sample).float(), self.y[idx]
 
 
-def ensure_channels_first(X: np.ndarray) -> np.ndarray:
-    X_arr = np.asarray(X, dtype=np.float32)
-    if X_arr.ndim != 4:
-        raise ValueError(f"Expected a 4D tensor, got shape {X_arr.shape}")
-    if X_arr.shape[1] <= 6 and X_arr.shape[-1] > 6:
-        return X_arr
-    return np.transpose(X_arr, (0, 3, 1, 2)).astype(np.float32, copy=False)
-
-
-def make_task1_splits(
-    y: np.ndarray,
-    seed: int = 42,
-    val_frac: float = 0.15,
-    test_frac: float = 0.15,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    indices = np.arange(len(y))
-    train_idx, temp_idx = train_test_split(
-        indices,
-        test_size=val_frac + test_frac,
-        random_state=seed,
-        stratify=y,
-    )
-    val_idx, test_idx = train_test_split(
-        temp_idx,
-        test_size=test_frac / (val_frac + test_frac),
-        random_state=seed,
-        stratify=y[temp_idx],
-    )
-    logger.info(
-        "Task 1 stratified split — train: %s | val: %s | test: %s",
-        f"{len(train_idx):,}",
-        f"{len(val_idx):,}",
-        f"{len(test_idx):,}",
-    )
-    return train_idx, val_idx, test_idx
-
-
 # ─────────────────────────────────────────────────────────────
 # Training & Evaluation
 # ─────────────────────────────────────────────────────────────
-
-def compute_recon_term(
-    recon_x: torch.Tensor,
-    x: torch.Tensor,
-    recon_loss: str = "l1",
-    recon_mix_alpha: float = 0.7,
-    nonzero_weight: float = 0.0,
-) -> torch.Tensor:
-    if recon_loss == "mse":
-        diff = (recon_x - x) ** 2
-    elif recon_loss == "l1":
-        diff = torch.abs(recon_x - x)
-    elif recon_loss == "mixed":
-        alpha = float(np.clip(recon_mix_alpha, 0.0, 1.0))
-        diff = alpha * torch.abs(recon_x - x) + (1.0 - alpha) * ((recon_x - x) ** 2)
-    else:
-        raise ValueError(f"Unsupported reconstruction loss: {recon_loss}")
-
-    weights = 1.0 + x * nonzero_weight
-    return (diff * weights).flatten(1).sum(dim=1).mean()
 
 
 def score_metrics(metrics: Dict[str, float]) -> tuple[float, float, float, float, float]:
@@ -211,50 +131,29 @@ def fit_task1_preprocessor(
     preprocess_mode: str,
     boost_channel: int = 0,
     boost_factor: float = 1.5,
-    percentile_ref_samples: int = 5000,
-    percentile: float = 99.9,
 ) -> List[Dict[str, float]]:
     """
     Fit a Task 1 normalizer using the training split only.
 
-    `common_task1` follows the Common Task 1 notebook baseline:
-      - log1p on every channel
-      - per-channel scaling by a high percentile estimated on the training split
-      - clamp to [0, 1]
-
-    The older `detector_reference` mode is kept only for compatibility.
+    The detector-reference recipe follows the original Evaluation Test
+    DeepFalcon notebook:
+      - one special channel gets log/percentile scaling with a top-end boost
+      - the remaining channels use mean/std scaling mapped into [0, 1]
     """
     preprocess_mode = normalize_preprocess_mode(preprocess_mode)
     params: List[Dict[str, float]] = []
 
-    X_cf = ensure_channels_first(X)
-
     if preprocess_mode == "global_logmax":
-        X_proc = np.log1p(X_cf)
+        X_proc = np.log1p(X)
         scale = float(np.max(X_proc))
-        for _ in range(X_cf.shape[1]):
+        for _ in range(X.shape[1]):
             params.append({"type": "global_logmax", "scale": max(scale, 1e-8)})
         return params
 
-    for ch in range(X_cf.shape[1]):
-        channel = X_cf[:, ch]
+    for ch in range(X.shape[1]):
+        channel = X[:, ch]
 
-        if preprocess_mode == "common_task1":
-            transformed = np.log1p(channel)
-            sample = transformed[: min(percentile_ref_samples, transformed.shape[0])].reshape(-1)
-            p_high = float(np.percentile(sample, percentile)) if sample.size else 0.0
-            if p_high > 0:
-                params.append({
-                    "type": "common_task1_percentile",
-                    "scale": p_high,
-                })
-            else:
-                cmax = float(np.max(transformed[: min(percentile_ref_samples, transformed.shape[0])]))
-                params.append({
-                    "type": "common_task1_percentile",
-                    "scale": max(cmax, 1e-8),
-                })
-        elif preprocess_mode == "detector_reference":
+        if preprocess_mode == "detector_reference":
             special_channel = int(boost_channel)
             if ch == special_channel:
                 transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
@@ -305,7 +204,7 @@ def apply_task1_preprocessor(
     X: np.ndarray,
     params: List[Dict[str, float]],
 ) -> np.ndarray:
-    X_cf = ensure_channels_first(X)
+    X_cf = np.asarray(X, dtype=np.float32)
     out = np.zeros_like(X_cf, dtype=np.float32)
 
     for ch, spec in enumerate(params):
@@ -316,9 +215,7 @@ def apply_task1_preprocessor(
             out[:, ch] = np.log1p(channel) / spec["scale"]
             continue
 
-        if kind == "common_task1_percentile":
-            normalized = np.log1p(channel) / max(spec["scale"], 1e-8)
-        elif kind == "detector_reference_log":
+        if kind == "detector_reference_log":
             transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
             normalized = (transformed - spec["p_low"]) / spec["scale"]
             high_mask = normalized > spec["boost_threshold"]
@@ -354,30 +251,29 @@ def compute_kl_weight(
     return beta_max * min(epoch / warmup_epochs, 1.0)
 
 
-def vae_loss(
+def reference_vae_loss(
     recon_x: torch.Tensor,
     x: torch.Tensor,
     mu: torch.Tensor,
     logvar: torch.Tensor,
-    recon_loss: str = "l1",
-    recon_mix_alpha: float = 0.7,
     beta: float = 1e-4,
-    nonzero_weight: float = 0.0,
-    variational: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Reconstruction + beta-KL loss for normalized detector images."""
-    recon = compute_recon_term(
-        recon_x,
-        x,
-        recon_loss=recon_loss,
-        recon_mix_alpha=recon_mix_alpha,
-        nonzero_weight=nonzero_weight,
-    )
-    if variational:
-        mu_f, lv_f = mu.float(), logvar.float()
-        kld = -0.5 * torch.mean(torch.sum(1 + lv_f - mu_f.pow(2) - lv_f.exp(), dim=1))
-    else:
+    """
+    Exact DeepFalcon-style VAE loss:
+      - weighted MSE summed across the full batch
+      - KL divergence summed across the full batch
+      - total = recon + beta * KL
+    """
+    importance_weights = 1.0 + x * 4.0
+    diff_squared = (recon_x - x) ** 2
+    recon = torch.sum(diff_squared * importance_weights)
+
+    mu_f, lv_f = mu.float(), logvar.float()
+    kld = -0.5 * torch.sum(1 + lv_f - mu_f.pow(2) - lv_f.exp())
+    if torch.isnan(kld) or torch.isinf(kld):
+        print("Warning: KL divergence is NaN or Inf, using zero instead", flush=True)
         kld = torch.zeros((), device=recon_x.device, dtype=recon_x.dtype)
+
     total = recon + beta * kld
     return total, recon, kld
 
@@ -395,13 +291,9 @@ def train_epoch(
     optimizer: torch.optim.Optimizer,
     scaler: torch.amp.GradScaler,
     device: torch.device,
-    recon_loss: str,
-    recon_mix_alpha: float,
     beta: float,
-    nonzero_weight: float,
-    variational: bool,
 ) -> float:
-    """One training epoch with AMP support."""
+    """One training epoch with AMP support using the reference VAE loss."""
     model.train()
     total_loss = 0.0
     for imgs, _ in tqdm(loader, leave=False, desc="Training"):
@@ -409,17 +301,7 @@ def train_epoch(
 
         with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
             recons, mu, logvar = model(imgs)
-            loss, _, _ = vae_loss(
-                recons,
-                imgs,
-                mu,
-                logvar,
-                recon_loss=recon_loss,
-                recon_mix_alpha=recon_mix_alpha,
-                beta=beta,
-                nonzero_weight=nonzero_weight,
-                variational=variational,
-            )
+            loss, _, _ = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
 
         optimizer.zero_grad(set_to_none=True)
         scaler.scale(loss).backward()
@@ -437,14 +319,10 @@ def eval_epoch(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
-    recon_loss: str,
-    recon_mix_alpha: float,
     beta: float,
-    nonzero_weight: float,
-    variational: bool,
     eval_use_mean: bool,
 ) -> float:
-    """Evaluate without gradient tracking using VAE Loss."""
+    """Evaluate without gradient tracking using the reference VAE loss."""
     model.eval()
     total_loss = 0.0
     for imgs, _ in loader:
@@ -452,31 +330,17 @@ def eval_epoch(
         with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
             recons = reconstruct_with_mode(model, imgs, use_mean=eval_use_mean)
             mu, logvar, _ = model.encode(imgs)
-            loss, _, _ = vae_loss(
-                recons,
-                imgs,
-                mu,
-                logvar,
-                recon_loss=recon_loss,
-                recon_mix_alpha=recon_mix_alpha,
-                beta=beta,
-                nonzero_weight=nonzero_weight,
-                variational=variational,
-            )
+            loss, _, _ = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
         total_loss += loss.item() * imgs.size(0)
     return total_loss / len(loader.dataset)
 
 
-def train_epoch_notebook_style(
+def train_epoch_reference_style(
     model: nn.Module,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     beta: float,
-    recon_loss: str,
-    recon_mix_alpha: float,
-    nonzero_weight: float,
-    variational: bool,
 ) -> tuple[float, float, float, int]:
     model.train()
     epoch_loss = 0.0
@@ -488,17 +352,7 @@ def train_epoch_notebook_style(
     for imgs, _ in iterator:
         imgs = imgs.to(device, non_blocking=True)
         recons, mu, logvar = model(imgs)
-        loss, recon, kld = vae_loss(
-            recons,
-            imgs,
-            mu,
-            logvar,
-            recon_loss=recon_loss,
-            recon_mix_alpha=recon_mix_alpha,
-            beta=beta,
-            nonzero_weight=nonzero_weight,
-            variational=variational,
-        )
+        loss, recon, kld = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
         if torch.isnan(loss) or torch.isinf(loss):
             print(f"Warning: Loss is {loss.item()}, skipping batch", flush=True)
             continue
@@ -527,15 +381,11 @@ def train_epoch_notebook_style(
 
 
 @torch.no_grad()
-def eval_epoch_notebook_style(
+def eval_epoch_reference_style(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
     beta: float,
-    recon_loss: str,
-    recon_mix_alpha: float,
-    nonzero_weight: float,
-    variational: bool,
 ) -> tuple[float, float, float, int]:
     model.eval()
     epoch_loss = 0.0
@@ -547,17 +397,7 @@ def eval_epoch_notebook_style(
     for imgs, _ in iterator:
         imgs = imgs.to(device, non_blocking=True)
         recons, mu, logvar = model(imgs)
-        loss, recon, kld = vae_loss(
-            recons,
-            imgs,
-            mu,
-            logvar,
-            recon_loss=recon_loss,
-            recon_mix_alpha=recon_mix_alpha,
-            beta=beta,
-            nonzero_weight=nonzero_weight,
-            variational=variational,
-        )
+        loss, recon, kld = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
         if not (torch.isnan(loss) or torch.isinf(loss)):
             epoch_loss += loss.item()
             epoch_recon_loss += recon.item()
@@ -571,44 +411,6 @@ def eval_epoch_notebook_style(
         )
 
     return epoch_loss, epoch_recon_loss, epoch_kl_loss, batch_count
-
-
-def train_epoch_common_task1(
-    model: nn.Module,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    criterion: nn.Module,
-    device: torch.device,
-) -> float:
-    model.train()
-    total_loss = 0.0
-    iterator = tqdm(loader, leave=False, desc="Training")
-    for imgs, _ in iterator:
-        imgs = imgs.to(device, non_blocking=True)
-        optimizer.zero_grad()
-        recons, _, _ = model(imgs)
-        loss = criterion(recons, imgs)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        optimizer.step()
-        total_loss += loss.item() * imgs.size(0)
-    return total_loss / len(loader.dataset)
-
-
-@torch.no_grad()
-def eval_epoch_common_task1(
-    model: nn.Module,
-    loader: DataLoader,
-    criterion: nn.Module,
-    device: torch.device,
-) -> float:
-    model.eval()
-    total_loss = 0.0
-    for imgs, _ in loader:
-        imgs = imgs.to(device, non_blocking=True)
-        recons, _, _ = model(imgs)
-        total_loss += criterion(recons, imgs).item() * imgs.size(0)
-    return total_loss / len(loader.dataset)
 
 
 @torch.no_grad()
@@ -652,7 +454,7 @@ def plot_reconstructions(
 
     fig, axes = plt.subplots(n_show, 6, figsize=(20, n_show * 2.5), squeeze=False)
     fig.suptitle(
-        "Common Task 1 — Autoencoder Reconstruction (Original | Reconstructed)",
+        "Task 1 — Autoencoder Reconstruction (Original | Reconstructed)",
         fontsize=14, fontweight="bold", y=1.02,
     )
 
@@ -788,35 +590,6 @@ def plot_sparse_diagnostics(
     logger.info("Saved sparse diagnostics → %s", sparse_path)
 
 
-def plot_summed_reconstructions(
-    model: nn.Module,
-    dataset: Task1Dataset,
-    device: torch.device,
-    out_dir: str,
-    n_show: int = 6,
-    use_mean: bool = True,
-) -> None:
-    originals, recons = _get_preview_arrays(model, dataset, device, n_show=n_show, use_mean=use_mean)
-    n_rows = originals.shape[0]
-    fig, axes = plt.subplots(2, n_rows, figsize=(n_rows * 2.5, 5), squeeze=False)
-    fig.suptitle("Task 1 — Optional Summed-Channel Reconstructions", fontsize=13, fontweight="bold")
-    for idx in range(n_rows):
-        orig_img = originals[idx].sum(axis=0)
-        recon_img = recons[idx].sum(axis=0)
-        vmax = float(np.percentile(np.concatenate([orig_img.ravel(), recon_img.ravel()]), 99.9))
-        axes[0, idx].imshow(orig_img, cmap="inferno", vmin=0, vmax=max(vmax, 1e-6), origin="lower")
-        axes[1, idx].imshow(recon_img, cmap="inferno", vmin=0, vmax=max(vmax, 1e-6), origin="lower")
-        axes[0, idx].set_title("Original", fontsize=9)
-        axes[1, idx].set_title("Reconstructed", fontsize=9)
-        axes[0, idx].axis("off")
-        axes[1, idx].axis("off")
-    plt.tight_layout()
-    path = os.path.join(out_dir, "summed_channel_reconstructions.png")
-    plt.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close()
-    logger.info("Saved optional summed-channel reconstructions → %s", path)
-
-
 def plot_normalized_inputs(
     dataset: Task1Dataset,
     out_dir: str,
@@ -899,7 +672,7 @@ def plot_loss_curve(train_losses: List[float], val_losses: List[float], out_dir:
     logger.info("Saved loss curve → %s", path)
 
 
-def plot_training_curves_notebook_style(
+def plot_training_curves_reference_style(
     train_losses: List[float],
     val_losses: List[float],
     recon_losses: List[float],
@@ -938,7 +711,24 @@ def plot_training_curves_notebook_style(
     path = os.path.join(out_dir, "training_curves.png")
     plt.savefig(path, dpi=150, bbox_inches="tight")
     plt.close()
-    logger.info("Saved notebook-style training curves → %s", path)
+    logger.info("Saved reference-style training curves → %s", path)
+
+
+def make_reference_split_indices(y: np.ndarray, seed: int = 42) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    indices = np.arange(len(y))
+    train_idx, val_idx = train_test_split(
+        indices,
+        test_size=0.2,
+        random_state=seed,
+        stratify=y,
+    )
+    test_idx = np.array(val_idx, copy=True)
+    logger.info(
+        "Reference split — train: %s | val/test: %s",
+        f"{len(train_idx):,}",
+        f"{len(val_idx):,}",
+    )
+    return np.asarray(train_idx), np.asarray(val_idx), np.asarray(test_idx)
 
 
 def plot_threshold_sweep(
@@ -1003,7 +793,6 @@ def resolve_experiment_settings(args: argparse.Namespace, exp_name: str) -> Dict
         "use_transpose_decoder": args.use_transpose_decoder,
         "latent_dim": args.latent_dim,
         "lr": args.lr,
-        "weight_decay": 1e-4,
         "scheduler_patience": args.scheduler_patience,
         "variational": args.variational,
         "boost_channel": args.boost_channel,
@@ -1013,16 +802,17 @@ def resolve_experiment_settings(args: argparse.Namespace, exp_name: str) -> Dict
         "eval_thresholds": [0.05],
         "eval_use_mean": True,
         "optimizer": "adamw",
-        "training_recipe": "default",
-        "model_type": "vae",
-        "patience_override": args.patience,
-        "val_frac": 0.15,
-        "test_frac": 0.15,
-        "percentile_ref_samples": 5000,
-        "percentile": 99.9,
     }
+    matched_preset = None
     if exp_name in EXPERIMENT_PRESETS:
-        base.update(EXPERIMENT_PRESETS[exp_name])
+        matched_preset = exp_name
+    else:
+        for preset_name in sorted(EXPERIMENT_PRESETS.keys(), key=len, reverse=True):
+            if exp_name.startswith(f"{preset_name}_"):
+                matched_preset = preset_name
+                break
+    if matched_preset is not None:
+        base.update(EXPERIMENT_PRESETS[matched_preset])
     return base
 
 
@@ -1039,8 +829,6 @@ def build_datasets(
         preprocess_mode=settings["preprocess_mode"],
         boost_channel=settings["boost_channel"],
         boost_factor=settings["boost_factor"],
-        percentile_ref_samples=int(settings.get("percentile_ref_samples", 5000)),
-        percentile=float(settings.get("percentile", 99.9)),
     )
     train_ds = Task1Dataset(X, y, train_idx, preprocessor_params)
     val_ds = Task1Dataset(X, y, val_idx, preprocessor_params)
@@ -1076,9 +864,9 @@ def save_config(out_dir: str, run_params: Dict[str, Any]) -> None:
 def save_summary(out_dir: str, exp_name: str, run_params: Dict[str, Any], metrics: Dict[str, float]) -> None:
     lines = [f"# {exp_name}", "", "## Positioning", ""]
     lines.extend([
-        "- Common Task 1-style convolutional autoencoder baseline.",
+        "- Reference VAE baseline for sparse detector reconstruction.",
         f"- Channel order: {', '.join(TASK1_CHANNEL_NAMES)}.",
-        "- Preprocessing matches the common_task_1 notebook: log1p + per-channel high-percentile scaling + clamp to [0, 1].",
+        "- Use this as the stable Task 1 baseline before trying new ideas.",
         "",
         "## Config",
         "",
@@ -1190,13 +978,13 @@ def update_context(root_dir: str, rows: List[Dict[str, Any]], notes: List[str]) 
     with open(path, "w", encoding="utf-8") as f:
         f.write("# Task 1 Context\n\n")
         f.write("## Root Issue\n\n")
-        f.write("- The active repo Task 1 path had drifted away from the simple Common Task 1 notebook baseline.\n")
-        f.write("- It was using a more complex VAE-style setup, different preprocessing, and different channel semantics than the baseline notebook.\n")
-        f.write("- Reverting to the notebook-equivalent autoencoder path restored a clean, reproducible baseline.\n\n")
+        f.write("- The active repo Task 1 path had drifted away from the known-good reference VAE notebook and started collapsing.\n")
+        f.write("- Matching the reference preprocessing, weighted MSE loss scaling, optimizer, and split behavior is the main stability requirement.\n")
+        f.write("- Task 1 is now kept as a faithful notebook-equivalent baseline with the requested channel order.\n\n")
         f.write("## Final Training Path\n\n")
-        f.write("- `task1_autoencoder_baseline` now follows the Common Task 1 baseline behavior.\n")
-        f.write("- Keep the simple convolutional autoencoder, MSE loss, stratified train/val/test split, and channel-wise reconstruction evidence.\n")
-        f.write("- Summed-channel plots are optional only; the main evidence is channel-wise ECAL / HCAL / Tracks.\n\n")
+        f.write("- `task1_autoencoder` now follows the modularized reference VAE path.\n")
+        f.write("- Keep transpose-decoder VAE training, weighted MSE reconstruction, reference preprocessing, sampled-latent evaluation, and channel-wise reconstruction evidence.\n")
+        f.write("- Local and Colab runs share the same official script path and the same saved artifacts.\n\n")
         f.write("## Run Notes\n\n")
         for note in notes:
             f.write(f"- {note}\n")
@@ -1274,7 +1062,8 @@ def run_experiment(
     if args.batch_size != DEFAULT_BATCH_SIZE:
         batch_size = int(args.batch_size)
     if batch_size <= 0:
-        batch_size = DEFAULT_BATCH_SIZE
+        batch_size = get_auto_batch_size(task_num=1)
+        logger.info("Auto-scaled batch size to %d based on VRAM", batch_size)
 
     train_losses: List[float] = []
     val_losses: List[float] = []
@@ -1289,35 +1078,23 @@ def run_experiment(
             val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
             test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
 
-            if training_recipe == "common_task1":
-                model = ConvAutoEncoder(in_channels=3).to(device)
-            else:
-                model = ConvVAE(
-                    embedding_dim=settings["latent_dim"],
-                    use_transpose_decoder=settings["use_transpose_decoder"],
-                    variational=settings["variational"],
-                    decoder_batchnorm=settings["decoder_batchnorm"],
-                    output_bias_init=settings["output_bias_init"],
-                ).to(device)
+            model = DeepFalconVAE(latent_dim=settings["latent_dim"]).to(device)
             n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            logger.info("ConvAutoencoder — %s trainable parameters", f"{n_params:,}")
+            logger.info("Reference VAE — %s trainable parameters", f"{n_params:,}")
 
             optimizer_name = str(settings.get("optimizer", "adamw")).lower()
             if optimizer_name == "adam":
-                optimizer = torch.optim.Adam(model.parameters(), lr=settings["lr"], weight_decay=settings.get("weight_decay", 1e-4))
+                optimizer = torch.optim.Adam(model.parameters(), lr=settings["lr"], weight_decay=1e-4)
             elif optimizer_name == "adamw":
-                optimizer = torch.optim.AdamW(model.parameters(), lr=settings["lr"], weight_decay=settings.get("weight_decay", 1e-4))
+                optimizer = torch.optim.AdamW(model.parameters(), lr=settings["lr"], weight_decay=1e-4)
             else:
                 raise ValueError(f"Unsupported optimizer: {optimizer_name}")
-            scheduler_factor = 0.5 if training_recipe == "common_task1" else 0.7
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode="min", factor=scheduler_factor, patience=settings["scheduler_patience"], min_lr=1e-6
+                optimizer, mode="min", factor=0.7, patience=settings["scheduler_patience"], min_lr=1e-6
             )
             scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
-            criterion = nn.MSELoss() if training_recipe == "common_task1" else None
 
-            run_patience = int(settings.get("patience_override", args.patience))
-            logger.info("Starting training for %d epochs (patience=%d, batch=%d)...", target_epochs, run_patience, batch_size)
+            logger.info("Starting training for %d epochs (patience=%d, batch=%d)...", target_epochs, args.patience, batch_size)
             train_losses, val_losses = [], []
             recon_losses: List[float] = []
             kl_losses: List[float] = []
@@ -1333,34 +1110,19 @@ def run_experiment(
                     settings["beta_max"],
                     warmup_epochs=settings.get("kl_warmup_epochs"),
                 )
-                if training_recipe == "common_task1":
-                    tr_loss = train_epoch_common_task1(model, train_loader, optimizer, criterion, device)
-                    vl_loss = eval_epoch_common_task1(model, val_loader, criterion, device)
-                    tr_recon_loss = tr_loss
-                    tr_kl_loss = 0.0
-                    vl_recon_loss = vl_loss
-                    vl_kl_loss = 0.0
-                elif training_recipe == "detector_reference":
-                    tr_total, tr_recon, tr_kl, tr_batches = train_epoch_notebook_style(
+                if training_recipe == "reference_vae":
+                    tr_total, tr_recon, tr_kl, tr_batches = train_epoch_reference_style(
                         model,
                         train_loader,
                         optimizer,
                         device,
                         beta,
-                        recon_loss=settings["recon_loss"],
-                        recon_mix_alpha=settings["recon_mix_alpha"],
-                        nonzero_weight=settings["nonzero_weight"],
-                        variational=settings["variational"],
                     )
-                    vl_total, vl_recon, vl_kl, vl_batches = eval_epoch_notebook_style(
+                    vl_total, vl_recon, vl_kl, vl_batches = eval_epoch_reference_style(
                         model,
                         val_loader,
                         device,
                         beta,
-                        recon_loss=settings["recon_loss"],
-                        recon_mix_alpha=settings["recon_mix_alpha"],
-                        nonzero_weight=settings["nonzero_weight"],
-                        variational=settings["variational"],
                     )
                     tr_loss = tr_total / (tr_batches * batch_size) if tr_batches > 0 else float("inf")
                     tr_recon_loss = tr_recon / (tr_batches * batch_size) if tr_batches > 0 else float("inf")
@@ -1371,21 +1133,13 @@ def run_experiment(
                 else:
                     tr_loss = train_epoch(
                         model, train_loader, optimizer, scaler, device,
-                        recon_loss=settings["recon_loss"],
-                        recon_mix_alpha=settings["recon_mix_alpha"],
                         beta=beta,
-                        nonzero_weight=settings["nonzero_weight"],
-                        variational=settings["variational"],
                     )
                     tr_recon_loss = tr_loss
                     tr_kl_loss = 0.0
                     vl_loss = eval_epoch(
                         model, val_loader, device,
-                        recon_loss=settings["recon_loss"],
-                        recon_mix_alpha=settings["recon_mix_alpha"],
                         beta=beta,
-                        nonzero_weight=settings["nonzero_weight"],
-                        variational=settings["variational"],
                         eval_use_mean=bool(settings.get("eval_use_mean", True)),
                     )
                     vl_recon_loss = vl_loss
@@ -1407,9 +1161,7 @@ def run_experiment(
 
                 gap = vl_loss / (tr_loss + 1e-10)
                 pbar.set_postfix(train=f"{tr_loss:.6f}", val=f"{vl_loss:.6f}", gap=f"{gap:.2f}x")
-                if training_recipe == "common_task1":
-                    print(f"Epoch {epoch:02d}/{target_epochs} | train_loss={tr_loss:.6f} | val_loss={vl_loss:.6f}", flush=True)
-                elif training_recipe == "detector_reference":
+                if training_recipe == "reference_vae":
                     print(f"Epoch {epoch}/{target_epochs}:", flush=True)
                     print(f"  Train Loss: {tr_loss:.6f} (Recon: {tr_recon_loss:.6f}, KL: {tr_kl_loss:.6f})", flush=True)
                     print(f"  Val Loss: {vl_loss:.6f} (Recon: {vl_recon_loss:.6f}, KL: {vl_kl_loss:.6f})", flush=True)
@@ -1422,7 +1174,7 @@ def run_experiment(
                         flush=True,
                     )
 
-                if training_recipe in {"common_task1", "detector_reference"} and ((epoch % 5 == 0) or epoch == target_epochs):
+                if training_recipe == "reference_vae" and ((epoch % 5 == 0) or epoch == target_epochs):
                     with torch.no_grad():
                         if len(val_loader) > 0:
                             sample_batch = next(iter(val_loader))[0].to(device)
@@ -1436,8 +1188,8 @@ def run_experiment(
                                 filename_prefix=f"epoch_{epoch}_",
                             )
 
-                if patience_counter >= run_patience and run_patience > 0:
-                    print(f"[{exp_name}] Early stopping at epoch {epoch} (no improvement for {run_patience} epochs)", flush=True)
+                if patience_counter >= args.patience and args.patience > 0:
+                    print(f"[{exp_name}] Early stopping at epoch {epoch} (no improvement for {args.patience} epochs)", flush=True)
                     break
             break
         except RuntimeError as exc:
@@ -1452,7 +1204,7 @@ def run_experiment(
         print(f"[{exp_name}] Restored best model (Val Loss: {best_val_loss:.6f})", flush=True)
 
     eval_use_mean = bool(settings.get("eval_use_mean", True))
-    if training_recipe in {"common_task1", "detector_reference"} and len(val_loader) > 0:
+    if training_recipe == "reference_vae" and len(val_loader) > 0:
         with torch.no_grad():
             sample_batch = next(iter(val_loader))[0].to(device)
             reconstructed, _, _ = model(sample_batch)
@@ -1491,14 +1243,13 @@ def run_experiment(
     save_run_metrics(out_dir, metrics, run_params)
 
     plot_normalized_inputs(train_ds, out_dir)
-    if training_recipe == "detector_reference":
-        plot_training_curves_notebook_style(train_losses, val_losses, recon_losses, kl_losses, out_dir)
+    if training_recipe == "reference_vae":
+        plot_training_curves_reference_style(train_losses, val_losses, recon_losses, kl_losses, out_dir)
     else:
         plot_loss_curve(train_losses, val_losses, out_dir)
     plot_reconstructions(model, val_ds, device, out_dir, use_mean=eval_use_mean)
     plot_reconstructions_with_error(model, val_ds, device, out_dir, use_mean=eval_use_mean)
     plot_sparse_diagnostics(model, val_ds, device, out_dir, threshold=float(best_threshold), use_mean=eval_use_mean)
-    plot_summed_reconstructions(model, val_ds, device, out_dir, use_mean=eval_use_mean)
     plot_threshold_sweep(threshold_metrics, out_dir)
     plot_sparse_vs_full_metrics(metrics, out_dir)
     save_checkpoint(model, out_dir, run_params, metrics, preprocessor_params)
@@ -1507,14 +1258,14 @@ def run_experiment(
 
     rows = update_leaderboard(os.path.join(OUTPUT_DIR, "ae"), exp_name, run_params, metrics)
     notes = [
-        f"{exp_name}: batch_size={batch_size}, epochs={target_epochs}, model_type={settings.get('model_type', 'vae')}",
-        f"{exp_name}: recon_loss={settings['recon_loss']}, preprocess_mode={settings['preprocess_mode']}, optimizer={settings.get('optimizer', 'adamw')}",
-        f"{exp_name}: eval_thresholds={settings.get('eval_thresholds', [0.05])}, best_pred_threshold={best_threshold:.2f}",
+        f"{exp_name}: batch_size={batch_size}, epochs={target_epochs}, latent_dim={settings['latent_dim']}, transpose_decoder={settings['use_transpose_decoder']}",
+        f"{exp_name}: recon_loss={settings['recon_loss']}, weighting=1+4x, beta_max={settings['beta_max']}, optimizer={settings.get('optimizer', 'adamw')}",
+        f"{exp_name}: eval_use_mean={eval_use_mean}, eval_thresholds={settings.get('eval_thresholds', [0.05])}, best_pred_threshold={best_threshold:.2f}",
     ]
     update_context(os.path.join(OUTPUT_DIR, "ae"), rows, notes)
     baseline_dir = None
     archive_root = os.path.join(OUTPUT_DIR, "ae", "archive")
-    for candidate in ("task1_image_baseline_pre_reference_cleanup_20260327", "task1_current_baseline", "task1_final", "task1_image_baseline"):
+    for candidate in ("task1_image_baseline_pre_reference_cleanup_20260327", "task1_image_baseline", "task1_current_baseline", "task1_final"):
         if os.path.exists(os.path.join(archive_root, candidate, "original_vs_reconstructed.png")):
             baseline_dir = os.path.join("archive", candidate)
             break
@@ -1536,37 +1287,31 @@ def main(args: argparse.Namespace) -> None:
 
     data_cfg = DataConfig(max_events=args.max_events)
     X, y = load_dataset(data_cfg.data_dir, data_cfg.max_events)
-    settings = resolve_experiment_settings(args, args.exp_name)
-    splits = make_task1_splits(
-        y,
-        seed=args.seed,
-        val_frac=float(settings.get("val_frac", 0.15)),
-        test_frac=float(settings.get("test_frac", 0.15)),
-    )
+    splits = make_reference_split_indices(y, seed=args.seed)
 
     run_experiment(args, args.exp_name, X, y, splits, device)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Common Task 1 — Convolutional Autoencoder")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size")
+    parser = argparse.ArgumentParser(description="Task 1 — Reference-aligned VAE autoencoder")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size (0=auto scale based on VRAM)")
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--patience", type=int, default=3, help="Early stopping patience (0=disabled)")
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--patience", type=int, default=10, help="Early stopping patience (0=disabled)")
     parser.add_argument("--max-events", type=int, default=None, help="Limit events (None=all)")
     parser.add_argument("--force-cpu", action="store_true")
     parser.add_argument("--force-rerun", action="store_true", help="Rerun experiment even if outputs already exist")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--exp-name", type=str, default="task1_autoencoder_baseline", help="Experiment name for output dir")
-    parser.add_argument("--preprocess-mode", type=str, default="common_task1", help="Preprocess mode: common_task1, detector_reference, global_logmax, or robust_log_channelwise")
-    parser.add_argument("--recon-loss", choices=["mse", "l1", "mixed"], default="mse")
+    parser.add_argument("--exp-name", type=str, default="task1_autoencoder", help="Experiment name for output dir")
+    parser.add_argument("--preprocess-mode", type=str, default="detector_reference", help="Preprocess mode: detector_reference, global_logmax, or robust_log_channelwise")
+    parser.add_argument("--recon-loss", choices=["mse", "l1", "mixed"], default="l1")
     parser.add_argument("--recon-mix-alpha", type=float, default=0.7, help="Alpha for mixed loss: alpha*L1 + (1-alpha)*MSE")
     parser.add_argument("--beta", type=float, default=1e-4, help="KL weight for VAE training")
     parser.add_argument("--nonzero-weight", type=float, default=2.0, help="Extra reconstruction weight on active pixels")
     parser.add_argument("--use-transpose-decoder", action="store_true", help="Use ConvTranspose decoder")
     parser.add_argument("--variational", dest="variational", action="store_true", help="Enable KL-regularized VAE mode")
     parser.add_argument("--deterministic-ae", dest="variational", action="store_false", help="Disable KL and sampling for plain autoencoder mode")
-    parser.set_defaults(variational=False)
+    parser.set_defaults(variational=True)
     parser.add_argument("--latent-dim", type=int, default=32)
     parser.add_argument("--scheduler-patience", type=int, default=5)
     parser.add_argument("--boost-channel", type=int, default=0, choices=[0, 1, 2], help="Which channel gets high-end activation boost in detector_reference mode")
