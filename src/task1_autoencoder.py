@@ -163,9 +163,10 @@ def fit_task1_preprocessor(
     """
     Fit a Task 1 normalizer using the training split only.
 
-    The detector-reference recipe uses sparse-preserving channel-wise
-    log/percentile scaling for all detector channels, with an optional gentle
-    boost on one channel's top-end activations so jet cores stay visible.
+    The detector-reference recipe follows the original Evaluation Test
+    DeepFalcon notebook:
+      - one special channel gets log/percentile scaling with a top-end boost
+      - the remaining channels use mean/std scaling mapped into [0, 1]
     """
     preprocess_mode = normalize_preprocess_mode(preprocess_mode)
     params: List[Dict[str, float]] = []
@@ -181,20 +182,32 @@ def fit_task1_preprocessor(
         channel = X[:, ch]
 
         if preprocess_mode == "detector_reference":
-            transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
-            transformed_nonzero = transformed[channel > 0]
-            if transformed_nonzero.size:
-                p_low, p_high = np.percentile(transformed_nonzero, [1.0, 99.9])
+            special_channel = int(boost_channel)
+            if ch == special_channel:
+                transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
+                transformed_nonzero = transformed[channel > 0]
+                if transformed_nonzero.size:
+                    p_low, p_high = np.percentile(transformed_nonzero, [1.0, 99.9])
+                else:
+                    p_low, p_high = 0.0, 1.0
+                params.append({
+                    "type": "detector_reference_log",
+                    "p_low": float(p_low),
+                    "scale": max(float(p_high - p_low), 1e-8),
+                    "boost_threshold": 0.75,
+                    "boost_factor": float(boost_factor),
+                    "special_channel": special_channel,
+                })
             else:
-                p_low, p_high = 0.0, 1.0
-            params.append({
-                "type": "detector_reference_log",
-                "p_low": float(p_low),
-                "scale": max(float(p_high - p_low), 1e-8),
-                "boost_threshold": 0.75,
-                "boost_factor": float(boost_factor),
-                "apply_boost": bool(ch == int(boost_channel)),
-            })
+                std = float(np.std(channel))
+                if std > 1e-10:
+                    params.append({
+                        "type": "detector_reference_standard",
+                        "mean": float(np.mean(channel)),
+                        "std_scale": max(3.0 * std, 1e-8),
+                    })
+                else:
+                    params.append({"type": "detector_reference_identity"})
         elif preprocess_mode == "robust_log_channelwise":
             transformed = np.log1p(channel)
             transformed_nonzero = transformed[channel > 0]
@@ -233,11 +246,15 @@ def apply_task1_preprocessor(
         if kind == "detector_reference_log":
             transformed = np.log1p(channel * 10.0 + 1e-8) / 3.0
             normalized = (transformed - spec["p_low"]) / spec["scale"]
-            if spec.get("apply_boost", False):
-                high_mask = normalized > spec["boost_threshold"]
-                normalized[high_mask] = spec["boost_threshold"] + (
-                    normalized[high_mask] - spec["boost_threshold"]
-                ) * spec["boost_factor"]
+            high_mask = normalized > spec["boost_threshold"]
+            normalized[high_mask] = spec["boost_threshold"] + (
+                normalized[high_mask] - spec["boost_threshold"]
+            ) * spec["boost_factor"]
+        elif kind == "detector_reference_standard":
+            normalized = (channel - spec["mean"]) / spec["std_scale"]
+            normalized = np.clip(normalized, -1.0, 1.0) * 0.5 + 0.5
+        elif kind == "detector_reference_identity":
+            normalized = channel
         elif kind == "robust_log_channelwise":
             transformed = np.log1p(channel)
             normalized = (transformed - spec["p_low"]) / spec["scale"]
