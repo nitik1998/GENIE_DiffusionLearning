@@ -622,6 +622,11 @@ def main(args: argparse.Namespace) -> None:
     device = get_device(args.force_cpu)
     ensure_dirs()
     out_dir = ensure_task_dirs("task2", args.exp_name)
+    metrics_path = os.path.join(out_dir, "metrics.json")
+    checkpoint_path = os.path.join(out_dir, "model_checkpoint.pt")
+    if not args.force_rerun and os.path.exists(metrics_path) and os.path.exists(checkpoint_path):
+        logger.info("Skipping completed experiment %s; outputs already exist in %s", args.exp_name, out_dir)
+        return
     logger.info("Experiment: %s → %s", args.exp_name, out_dir)
 
     # Load and split
@@ -802,6 +807,7 @@ if __name__ == "__main__":
     parser.add_argument("--dropout", type=float, default=0.4)
     parser.add_argument("--max-events", type=int, default=None)
     parser.add_argument("--force-cpu", action="store_true")
+    parser.add_argument("--force-rerun", action="store_true", help="Rerun experiment even if outputs already exist")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--exp-name", type=str, default="baseline", help="Experiment name for output dir")
     main(parser.parse_args())
