@@ -463,12 +463,13 @@ def plot_reconstructions_with_error(
     )
     for row in range(n_rows):
         for ch in range(3):
-            joint = np.concatenate([originals[row, ch].ravel(), recons[row, ch].ravel()])
-            positive = joint[joint > 0]
-            vmax = float(np.percentile(positive, 99.5)) if positive.size else 1e-6
+            orig_ch = originals[row, ch]
+            recon_ch = recons[row, ch]
+            bg = float(np.median(orig_ch))
+            vmax = max(float(orig_ch.max()), float(recon_ch.max()), bg + 1e-6)
             evmax = float(np.percentile(errors[row, ch], 99.5)) if np.any(errors[row, ch] > 0) else 1e-6
-            axes[row, ch].imshow(originals[row, ch], cmap="hot", vmin=0, vmax=vmax)
-            axes[row, ch + 3].imshow(recons[row, ch], cmap="hot", vmin=0, vmax=vmax)
+            axes[row, ch].imshow(orig_ch, cmap="hot", vmin=bg, vmax=vmax)
+            axes[row, ch + 3].imshow(recon_ch, cmap="hot", vmin=bg, vmax=vmax)
             axes[row, ch + 6].imshow(errors[row, ch], cmap="magma", vmin=0, vmax=evmax)
             if row == 0:
                 axes[row, ch].set_title(f"Original {TASK1_CHANNEL_NAMES[ch]}", fontsize=9)
@@ -495,7 +496,11 @@ def plot_sparse_diagnostics(
 ) -> None:
     originals, recons = _get_preview_arrays(model, dataset, device, n_show=n_show, use_mean=use_mean)
     n_rows = originals.shape[0]
-    true_mask = originals > 0.01
+    # Per-channel background-aware mask: signal = pixels above the median background floor
+    true_mask = np.zeros_like(originals, dtype=bool)
+    for ch in range(3):
+        ch_median = float(np.median(originals[:, ch]))
+        true_mask[:, ch] = originals[:, ch] > (ch_median + 0.01)
     pred_mask = recons > threshold
 
     fig, axes = plt.subplots(n_rows, 6, figsize=(18, n_rows * 2.2), squeeze=False)
@@ -521,10 +526,11 @@ def plot_sparse_diagnostics(
         combined_orig = originals[row].sum(axis=0)
         combined_recon = recons[row].sum(axis=0)
         combined_error = np.abs(combined_orig - combined_recon)
-        vmax = float(np.percentile(np.concatenate([combined_orig.ravel(), combined_recon.ravel()]), 99.5))
+        bg = float(np.median(combined_orig))
+        vmax = max(float(combined_orig.max()), float(combined_recon.max()), bg + 1e-6)
         evmax = float(np.percentile(combined_error, 99.5)) if np.any(combined_error > 0) else 1e-6
-        axes[row, 0].imshow(combined_orig, cmap="hot", vmin=0, vmax=max(vmax, 1e-6))
-        axes[row, 1].imshow(combined_recon, cmap="hot", vmin=0, vmax=max(vmax, 1e-6))
+        axes[row, 0].imshow(combined_orig, cmap="hot", vmin=bg, vmax=vmax)
+        axes[row, 1].imshow(combined_recon, cmap="hot", vmin=bg, vmax=vmax)
         axes[row, 2].imshow(combined_error, cmap="magma", vmin=0, vmax=max(evmax, 1e-6))
         if row == 0:
             axes[row, 0].set_title("Combined Original", fontsize=9)
