@@ -231,10 +231,6 @@ python src/task3_diffusion.py --max-events 64 --epochs 1 --timesteps 20 --force-
 │   ├── task2_gnn.py              # GNN classification pipeline
 │   ├── task3_diffusion.py        # Latent diffusion pipeline
 │   ├── visualize_task2_pipeline.py
-│   ├── data/
-│   │   ├── dataset.py            # Dataset classes
-│   │   ├── graph_builder.py      # Point cloud → graph conversion
-│   │   └── transforms.py         # Data transforms
 │   └── models/
 │       ├── __init__.py
 │       ├── autoencoder.py        # JetVAE, ConvAutoEncoder
@@ -243,18 +239,9 @@ python src/task3_diffusion.py --max-events 64 --epochs 1 --timesteps 20 --force-
 │       ├── diffusion_unet.py     # SimpleUNet (pixel-space baseline)
 │       └── latent_denoiser.py    # Time-conditioned residual MLP
 ├── notebooks/                    # Colab-ready notebooks
-├── results_from_colab/           # Final trained models & metrics
 ├── assets/                       # README figures
 └── requirements.txt
 ```
-
-### Pre-trained Models
-
-| Archive | Contents |
-|:--------|:---------|
-| `results_from_colab/task1_autoencoder.zip` | VAE checkpoint · training curves · reconstructions |
-| `results_from_colab/task2_graph_classifier.zip` | GraphSAGE checkpoint · ROC curves · confusion matrix |
-| `results_from_colab/latent_diffusion.zip` | Latent denoiser checkpoint · generated samples |
 
 ---
 
