@@ -26,12 +26,29 @@ class SinusoidalTimeEmbedding(nn.Module):
         return torch.cat([args.sin(), args.cos()], dim=-1)
 
 
+class Block(nn.Module):
+    def __init__(self, dim: int, time_emb_dim: int) -> None:
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.LayerNorm(dim),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+        )
+        self.time_mlp = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(time_emb_dim, dim)
+        )
+
+    def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
+        time_scale = self.time_mlp(t_emb)
+        return x + self.mlp(x + time_scale)
+
+
 class LatentDenoiser(nn.Module):
     """
     MLP denoiser for latent-space DDPM.
-
-    Takes a noisy latent vector z_t and timestep t, predicts the noise.
-    Architecture: [latent_dim + time_dim] → hidden → hidden → latent_dim
+    Injects time embeddings at every residual block.
     """
 
     def __init__(
@@ -44,24 +61,27 @@ class LatentDenoiser(nn.Module):
         super().__init__()
         self.time_embed = nn.Sequential(
             SinusoidalTimeEmbedding(time_emb_dim),
-            nn.Linear(time_emb_dim, time_emb_dim),
+            nn.Linear(time_emb_dim, time_emb_dim * 4),
             nn.SiLU(),
+            nn.Linear(time_emb_dim * 4, time_emb_dim),
         )
 
-        layers = []
-        in_dim = latent_dim + time_emb_dim
-        for _ in range(n_layers):
-            layers.extend([
-                nn.Linear(in_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.SiLU(),
-                nn.Dropout(0.1),
-            ])
-            in_dim = hidden_dim
-        layers.append(nn.Linear(hidden_dim, latent_dim))
-        self.net = nn.Sequential(*layers)
+        self.proj_in = nn.Linear(latent_dim, hidden_dim)
+        
+        self.blocks = nn.ModuleList([
+            Block(hidden_dim, time_emb_dim) for _ in range(n_layers)
+        ])
+        
+        self.proj_out = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, latent_dim)
+        )
 
     def forward(self, z_noisy: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         t_emb = self.time_embed(t)
-        x = torch.cat([z_noisy, t_emb], dim=-1)
-        return self.net(x)
+        x = self.proj_in(z_noisy)
+        
+        for block in self.blocks:
+            x = block(x, t_emb)
+            
+        return self.proj_out(x)
