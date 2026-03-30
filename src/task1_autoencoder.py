@@ -289,6 +289,7 @@ def train_epoch_reference_style(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     beta: float,
+    scaler: torch.amp.GradScaler = None,
 ) -> tuple[float, float, float, int]:
     model.train()
     epoch_loss = 0.0
@@ -297,18 +298,27 @@ def train_epoch_reference_style(
     batch_count = 0
 
     iterator = tqdm(loader, leave=False, desc="Training")
+    use_amp = device.type == "cuda" and scaler is not None
     for imgs, _ in iterator:
         imgs = imgs.to(device, non_blocking=True)
-        recons, mu, logvar = model(imgs)
-        loss, recon, kld = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
+        optimizer.zero_grad(set_to_none=True)
+        with torch.amp.autocast("cuda", enabled=use_amp):
+            recons, mu, logvar = model(imgs)
+            loss, recon, kld = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
         if torch.isnan(loss) or torch.isinf(loss):
             print(f"Warning: Loss is {loss.item()}, skipping batch", flush=True)
             continue
 
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-        optimizer.step()
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            optimizer.step()
 
         epoch_loss += loss.item()
         epoch_recon_loss += recon.item()
@@ -321,9 +331,6 @@ def train_epoch_reference_style(
             kl=kld.item() / imgs.size(0),
             kl_w=beta,
         )
-
-        if device.type == "cuda" and batch_count % 10 == 0:
-            torch.cuda.empty_cache()
 
     return epoch_loss, epoch_recon_loss, epoch_kl_loss, batch_count
 
@@ -1037,9 +1044,9 @@ def run_experiment(
     while True:
         try:
             pin = device.type == "cuda"
-            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=pin)
-            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
-            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
+            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=pin, persistent_workers=True)
+            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=pin, persistent_workers=True)
+            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=pin, persistent_workers=True)
 
             model = DeepFalconVAE(latent_dim=settings["latent_dim"]).to(device)
             n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -1065,6 +1072,8 @@ def run_experiment(
             best_state = None
             patience_counter = 0
 
+            scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
+
             pbar = tqdm(range(1, target_epochs + 1), desc=f"Training [{exp_name}]", unit="epoch")
             for epoch in pbar:
                 epoch_start = time.time()
@@ -1080,6 +1089,7 @@ def run_experiment(
                     optimizer,
                     device,
                     beta,
+                    scaler=scaler,
                 )
                 vl_total, vl_recon, vl_kl, vl_batches = eval_epoch_reference_style(
                     model,
