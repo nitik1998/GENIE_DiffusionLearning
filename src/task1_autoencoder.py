@@ -92,18 +92,18 @@ class Task1Dataset(Dataset):
         indices: np.ndarray,
         preprocessor_params: List[Dict[str, float]],
     ) -> None:
-        self.X = X
         self.indices = np.asarray(indices, dtype=np.int64)
         self.y = torch.from_numpy(y[self.indices]).long()
-        self.preprocessor_params = preprocessor_params
+        # Pre-compute ALL preprocessing once → __getitem__ becomes a pure tensor lookup
+        raw = X[self.indices]  # shape: [N, C, H, W]
+        processed = apply_task1_preprocessor(raw, preprocessor_params)  # numpy
+        self.data = torch.from_numpy(processed).float()  # [N, C, H, W] cached as tensor
 
     def __len__(self) -> int:
         return len(self.y)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        sample = self.X[self.indices[idx] : self.indices[idx] + 1]
-        sample = apply_task1_preprocessor(sample, self.preprocessor_params)[0]
-        return torch.from_numpy(sample).float(), self.y[idx]
+        return self.data[idx], self.y[idx]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -297,16 +297,14 @@ def train_epoch_reference_style(
     epoch_kl_loss = 0.0
     batch_count = 0
 
-    iterator = tqdm(loader, leave=False, desc="Training")
     use_amp = device.type == "cuda" and scaler is not None
-    for imgs, _ in iterator:
+    for imgs, _ in loader:
         imgs = imgs.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast("cuda", enabled=use_amp):
             recons, mu, logvar = model(imgs)
             loss, recon, kld = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f"Warning: Loss is {loss.item()}, skipping batch", flush=True)
             continue
 
         if scaler is not None:
@@ -325,13 +323,6 @@ def train_epoch_reference_style(
         epoch_kl_loss += kld.item()
         batch_count += 1
 
-        iterator.set_postfix(
-            loss=loss.item() / imgs.size(0),
-            recon=recon.item() / imgs.size(0),
-            kl=kld.item() / imgs.size(0),
-            kl_w=beta,
-        )
-
     return epoch_loss, epoch_recon_loss, epoch_kl_loss, batch_count
 
 
@@ -348,22 +339,17 @@ def eval_epoch_reference_style(
     epoch_kl_loss = 0.0
     batch_count = 0
 
-    iterator = tqdm(loader, leave=False, desc="Validation")
-    for imgs, _ in iterator:
+    use_amp = device.type == "cuda"
+    for imgs, _ in loader:
         imgs = imgs.to(device, non_blocking=True)
-        recons, mu, logvar = model(imgs)
-        loss, recon, kld = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
+        with torch.amp.autocast("cuda", enabled=use_amp):
+            recons, mu, logvar = model(imgs)
+            loss, recon, kld = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
         if not (torch.isnan(loss) or torch.isinf(loss)):
             epoch_loss += loss.item()
             epoch_recon_loss += recon.item()
             epoch_kl_loss += kld.item()
             batch_count += 1
-
-        iterator.set_postfix(
-            loss=loss.item() / imgs.size(0) if not torch.isnan(loss) else float("inf"),
-            recon=recon.item() / imgs.size(0) if not torch.isnan(recon) else float("inf"),
-            kl=kld.item() / imgs.size(0) if not torch.isnan(kld) else float("inf"),
-        )
 
     return epoch_loss, epoch_recon_loss, epoch_kl_loss, batch_count
 
@@ -1101,48 +1087,48 @@ def run_experiment(
                     beta,
                     scaler=scaler,
                 )
-                vl_total, vl_recon, vl_kl, vl_batches = eval_epoch_reference_style(
-                    model,
-                    val_loader,
-                    device,
-                    beta,
-                )
                 n_train = len(train_ds)
-                n_val = len(val_ds)
                 tr_loss = tr_total / n_train if tr_batches > 0 else float("inf")
                 tr_recon_loss = tr_recon / n_train if tr_batches > 0 else float("inf")
                 tr_kl_loss = tr_kl / n_train if tr_batches > 0 else float("inf")
-                vl_loss = vl_total / n_val if vl_batches > 0 else float("inf")
-                vl_recon_loss = vl_recon / n_val if vl_batches > 0 else float("inf")
-                vl_kl_loss = vl_kl / n_val if vl_batches > 0 else float("inf")
-
-                scheduler.step(vl_loss)
                 train_losses.append(tr_loss)
-                val_losses.append(vl_loss)
                 recon_losses.append(tr_recon_loss)
                 kl_losses.append(tr_kl_loss)
 
-                if vl_loss < best_val_loss:
-                    best_val_loss = vl_loss
-                    best_state = copy.deepcopy(model.state_dict())
-                    patience_counter = 0
-                    marker = " *"
+                # Validate every 3 epochs or on the last epoch to save time
+                run_val = (epoch % 3 == 0) or (epoch == target_epochs) or (epoch <= 3)
+                if run_val:
+                    vl_total, vl_recon, vl_kl, vl_batches = eval_epoch_reference_style(
+                        model,
+                        val_loader,
+                        device,
+                        beta,
+                    )
+                    n_val = len(val_ds)
+                    vl_loss = vl_total / n_val if vl_batches > 0 else float("inf")
+                    vl_recon_loss = vl_recon / n_val if vl_batches > 0 else float("inf")
+                    vl_kl_loss = vl_kl / n_val if vl_batches > 0 else float("inf")
+                    scheduler.step(vl_loss)
+                    val_losses.append(vl_loss)
+                    if vl_loss < best_val_loss:
+                        best_val_loss = vl_loss
+                        best_state = copy.deepcopy(model.state_dict())
+                        patience_counter = 0
+                        marker = " *"
+                    else:
+                        patience_counter += 1
+                        marker = ""
                 else:
-                    patience_counter += 1
-                    marker = ""
+                    vl_loss = val_losses[-1] if val_losses else float("inf")
+                    vl_recon_loss = 0.0
+                    vl_kl_loss = 0.0
+                    marker = " (skip-val)"
 
                 gap = vl_loss / (tr_loss + 1e-10)
-                pbar.set_postfix(train=f"{tr_loss:.6f}", val=f"{vl_loss:.6f}", gap=f"{gap:.2f}x")
                 epoch_elapsed = time.time() - epoch_start
-                print(f"Epoch {epoch}/{target_epochs} [{epoch_elapsed:.1f}s]:", flush=True)
-                print(f"  Train Loss: {tr_loss:.6f} (Recon: {tr_recon_loss:.6f}, KL: {tr_kl_loss:.6f})", flush=True)
-                print(f"  Val Loss: {vl_loss:.6f} (Recon: {vl_recon_loss:.6f}, KL: {vl_kl_loss:.6f})", flush=True)
-                remaining = epoch_elapsed * (target_epochs - epoch)
-                print(f"  LR: {optimizer.param_groups[0]['lr']:.6f}, KL Weight: {beta:.6f}, ETA: {remaining/60:.1f}min{marker}", flush=True)
+                print(f"E{epoch}/{target_epochs} [{epoch_elapsed:.1f}s] train={tr_loss:.2f} val={vl_loss:.2f} gap={gap:.2f}x lr={optimizer.param_groups[0]['lr']:.6f} kl_w={beta:.4f}{marker}", flush=True)
 
-
-                if (epoch % 5 == 0) or epoch == target_epochs:
-
+                if (epoch % 20 == 0) or epoch == target_epochs:
                     with torch.no_grad():
                         if len(val_loader) > 0:
                             sample_batch = next(iter(val_loader))[0].to(device)
