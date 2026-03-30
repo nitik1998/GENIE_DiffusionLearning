@@ -40,7 +40,6 @@ import torch.nn.functional as F
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from tqdm import tqdm
 from torch.utils.data import DataLoader, TensorDataset
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -201,8 +200,8 @@ def train_quick_vae(
     vae = ConvAutoEncoder(in_channels=3).to(device)
     optimizer = torch.optim.Adam(vae.parameters(), lr=1e-3)
 
-    pbar = tqdm(range(1, epochs + 1), desc="Auto-training VAE", unit="epoch")
-    for epoch in pbar:
+    print(f"=== Auto-training VAE for {epochs} epochs ===", flush=True)
+    for epoch in range(1, epochs + 1):
         vae.train()
         total_loss = 0.0
         n = 0
@@ -217,8 +216,7 @@ def train_quick_vae(
             n += imgs.size(0)
 
         tr_loss = total_loss / n
-        pbar.set_postfix(loss=f"{tr_loss:.4f}")
-        print(f"VAE Epoch {epoch}/{epochs} | Loss: {tr_loss:.6f}", flush=True)
+        print(f"VAE E{epoch}/{epochs} | Loss: {tr_loss:.6f}", flush=True)
 
     vae.eval()
     logger.info("VAE auto-training complete.")
@@ -264,8 +262,8 @@ def run_image_ddpm(args: argparse.Namespace) -> None:
 
     scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
 
-    pbar = tqdm(range(1, args.epochs + 1), desc="Training [image_ddpm]", unit="epoch")
-    for epoch in pbar:
+    print(f"=== Starting training [image_ddpm] for {args.epochs} epochs ===", flush=True)
+    for epoch in range(1, args.epochs + 1):
         epoch_start = time.time()
 
         # Train
@@ -311,8 +309,7 @@ def run_image_ddpm(args: argparse.Namespace) -> None:
 
         elapsed = time.time() - epoch_start
         remaining = elapsed * (args.epochs - epoch)
-        pbar.set_postfix(train=f"{tr_loss:.4f}", val=f"{vl_loss:.4f}")
-        print(f"Epoch {epoch:03d}/{args.epochs} [{elapsed:.1f}s] | Train: {tr_loss:.4f} | Val: {vl_loss:.4f} | ETA: {remaining/60:.1f}min{marker}", flush=True)
+        print(f"E{epoch}/{args.epochs} [{elapsed:.1f}s] train={tr_loss:.4f} val={vl_loss:.4f} ETA={remaining/60:.1f}min{marker}", flush=True)
 
         if patience_counter >= args.patience and args.patience > 0:
             print(f"Early stopping at epoch {epoch}", flush=True)
@@ -410,7 +407,7 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
         nonlocal latent_spatial_shape
         latents = []
         with torch.no_grad():
-            for imgs, _ in tqdm(loader, desc="Encoding", leave=False):
+            for imgs, _ in loader:
                 imgs = imgs.to(device, non_blocking=True)
                 z = vae.get_latent(imgs)  # (B, latent_dim) or (B, C, H, W)
                 if z.dim() > 2:
@@ -451,8 +448,8 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
     best_state = None
     patience_counter = 0
 
-    pbar = tqdm(range(1, args.epochs + 1), desc="Training [latent_diffusion]", unit="epoch")
-    for epoch in pbar:
+    print(f"=== Starting training [latent_diffusion] for {args.epochs} epochs ===", flush=True)
+    for epoch in range(1, args.epochs + 1):
         epoch_start = time.time()
 
         # Train
@@ -494,8 +491,7 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
 
         elapsed = time.time() - epoch_start
         remaining = elapsed * (args.epochs - epoch)
-        pbar.set_postfix(train=f"{tr_loss:.6f}", val=f"{vl_loss:.6f}")
-        print(f"Epoch {epoch:03d}/{args.epochs} [{elapsed:.1f}s] | Train: {tr_loss:.6f} | Val: {vl_loss:.6f} | ETA: {remaining/60:.1f}min{marker}", flush=True)
+        print(f"E{epoch}/{args.epochs} [{elapsed:.1f}s] train={tr_loss:.6f} val={vl_loss:.6f} ETA={remaining/60:.1f}min{marker}", flush=True)
 
         if patience_counter >= args.patience and args.patience > 0:
             print(f"Early stopping at epoch {epoch}", flush=True)

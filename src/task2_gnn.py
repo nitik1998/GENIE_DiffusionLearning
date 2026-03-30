@@ -41,7 +41,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score, confusion_matrix, f1_score
-from tqdm import tqdm
 import time
 from torch_geometric.data import Data, Batch
 
@@ -167,7 +166,9 @@ class JetGraphDataset(Dataset):
         logger.info("Pre-building %s graph dataset (n=%s, k=%d)...", tag, f"{n:,}", knn_k)
         self.channel_scales = compute_channel_scales(X, use_log1p=True)
         self.graphs: List[Data] = []
-        for i in tqdm(range(n), desc=f"Building {tag} graphs", unit="graph", leave=False):
+        for i in range(n):
+            if i % 5000 == 0:
+                print(f"  Building {tag} graphs: {i}/{n}...", flush=True)
             img = normalize_channels(
                 X[i : i + 1], self.channel_scales, use_log1p=True
             )[0]
@@ -203,7 +204,7 @@ def train_epoch(
     """One training epoch with gradient clipping."""
     model.train()
     total_loss = 0.0
-    for batch in tqdm(loader, leave=False, desc="Training"):
+    for batch in loader:
         batch = batch.to(device, non_blocking=True)
 
         with torch.amp.autocast("cuda", enabled=(device.type == "cuda")):
@@ -690,8 +691,8 @@ def main(args: argparse.Namespace) -> None:
     train_losses, val_aucs = [], []
     ckpt_path = os.path.join(CHECKPOINT_DIR, f"gnn_{args.exp_name}.pt")
 
-    pbar = tqdm(range(1, args.epochs + 1), desc="Training", unit="epoch")
-    for epoch in pbar:
+    print(f"=== Starting GNN training for {args.epochs} epochs ===", flush=True)
+    for epoch in range(1, args.epochs + 1):
         epoch_start = time.time()
         tr_loss = train_epoch(model, loaders["train"], optimizer, criterion, scaler, device)
         _, va_log, va_y = eval_epoch(model, loaders["val"], criterion, device)
@@ -712,7 +713,6 @@ def main(args: argparse.Namespace) -> None:
             patience_counter += 1
             marker = ""
 
-        pbar.set_postfix(loss=f"{tr_loss:.4f}", auc=f"{va_auc:.4f}")
         epoch_elapsed = time.time() - epoch_start
         remaining = epoch_elapsed * (args.epochs - epoch)
         print(
