@@ -645,8 +645,19 @@ def main(args: argparse.Namespace) -> None:
         ds = JetGraphDataset(X[idx], y[idx], knn_k=gnn_cfg.knn_k, tag=split)
         loaders[split] = DataLoader(
             ds, batch_size=batch_size, shuffle=(split == "train"),
-            collate_fn=collate_graphs, num_workers=4, persistent_workers=True,
+            collate_fn=collate_graphs, num_workers=0,
         )
+
+    # Calculate class weight before deleting y
+    train_pos_weight = y[train_idx].mean() / (1 - y[train_idx].mean() + 1e-6)
+
+    # Save a small subset for visualizations, then free the massive arrays
+    viz_n = min(500, len(test_idx))
+    X_viz = X[test_idx[:viz_n]].copy()
+    y_viz = y[test_idx[:viz_n]].copy()
+    del X, y
+    import gc
+    gc.collect()
 
     # Model
     if args.model_type == "edgeconv":
@@ -666,10 +677,7 @@ def main(args: argparse.Namespace) -> None:
     logger.info("%s — %s trainable parameters", model.__class__.__name__, f"{n_params:,}")
 
     # Class weighting for imbalanced data
-    pos_weight = torch.tensor(
-        [y[train_idx].mean() / (1 - y[train_idx].mean() + 1e-6)],
-        device=device,
-    )
+    pos_weight = torch.tensor([train_pos_weight], device=device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
@@ -705,7 +713,7 @@ def main(args: argparse.Namespace) -> None:
 
         if va_auc > best_auc:
             best_auc = va_auc
-            best_state = copy.deepcopy(model.state_dict())
+            best_state = {k: v.cpu() for k, v in model.state_dict().items()}
             patience_counter = 0
             marker = " *"
             torch.save(best_state, ckpt_path)
@@ -777,14 +785,14 @@ def main(args: argparse.Namespace) -> None:
         os.path.join(out_dir, "model_checkpoint.pt"),
     )
 
-    # Pipeline visualizations (using raw data)
+    # Pipeline visualizations (using saved subset)
     logger.info("Generating pipeline visualizations...")
-    plot_pipeline(X[test_idx], y[test_idx], gnn_cfg.knn_k, out_dir, n_show=2)
-    plot_graph_stats(X[test_idx], y[test_idx], gnn_cfg.knn_k, out_dir,
-                     n_sample=min(500, len(test_idx)))
-    plot_classwise_example_graphs(X[test_idx], y[test_idx], gnn_cfg.knn_k, out_dir)
-    plot_graph_stats_by_class(X[test_idx], y[test_idx], gnn_cfg.knn_k, out_dir,
-                              n_sample=min(500, len(test_idx)))
+    plot_pipeline(X_viz, y_viz, gnn_cfg.knn_k, out_dir, n_show=2)
+    plot_graph_stats(X_viz, y_viz, gnn_cfg.knn_k, out_dir,
+                     n_sample=min(500, len(X_viz)))
+    plot_classwise_example_graphs(X_viz, y_viz, gnn_cfg.knn_k, out_dir)
+    plot_graph_stats_by_class(X_viz, y_viz, gnn_cfg.knn_k, out_dir,
+                              n_sample=min(500, len(X_viz)))
 
     # Classification plots
     plot_training_curves(train_losses, val_aucs, out_dir)

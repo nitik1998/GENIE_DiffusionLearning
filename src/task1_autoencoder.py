@@ -1037,10 +1037,11 @@ def run_experiment(
             if device.type == "cuda":
                 torch.backends.cudnn.benchmark = True
                 torch.set_float32_matmul_precision('high')  # Enable TF32 on H100/A100
-            # Data is pre-cached as tensors — use 2 workers for overlap
-            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=pin, prefetch_factor=2)
-            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=pin, prefetch_factor=2)
-            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=pin, prefetch_factor=2)
+            # Data is pre-cached as tensors — num_workers=0 is fastest (avoids IPC)
+            # and prevents Colab /dev/shm exhaustion crashes
+            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=pin)
+            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
+            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
 
             model = DeepFalconVAE(latent_dim=settings["latent_dim"]).to(device)
             if device.type == "cuda":
