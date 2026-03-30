@@ -10,7 +10,7 @@ This repository implements a three-task evaluation pipeline for the [GENIE proje
 ## Results Summary
 
 | Task | Model | Key Metric | Score |
-|:-----|:------|:-----------|------:|
+|------|-------|------------|-------|
 | **1** — Reconstruction | Convolutional VAE | PSNR / SSIM | **37.93 dB** / **0.967** |
 | **2** — Classification | GraphSAGE on k-NN graphs | ROC-AUC / Accuracy | **0.774** / **70.6%** |
 | **3** — Generation | Latent DDPM | PSNR / SSIM | **30.32 dB** / **0.931** |
@@ -22,7 +22,7 @@ This repository implements a three-task evaluation pipeline for the [GENIE proje
 The quark/gluon jet dataset contains **139,306** simulated proton–proton collision events, each represented as a `125 × 125 × 3` calorimeter image with three detector channels:
 
 | Channel | Detector | Physics |
-|:--------|:---------|:--------|
+|---------|----------|---------|
 | 0 | **Tracks** | Charged particle trajectories — extremely sparse (< 0.1% nonzero) |
 | 1 | **ECAL** | Electromagnetic calorimeter — captures electron and photon showers |
 | 2 | **HCAL** | Hadronic calorimeter — captures hadron energy deposits |
@@ -34,7 +34,7 @@ On average only **~0.06%** of pixels are nonzero per image. This extreme sparsit
 ## Metrics Guide
 
 | Metric | Measures | Higher or Lower? |
-|:-------|:---------|:-----------------|
+|--------|----------|------------------|
 | **MSE** | Pixel-wise reconstruction error | Lower ↓ |
 | **Nonzero MSE** | Error on active detector cells only (ignores background) | Lower ↓ |
 | **PSNR** | Signal-to-noise ratio in dB; ≥ 30 dB is good quality | Higher ↑ |
@@ -58,12 +58,13 @@ On average only **~0.06%** of pixels are nonzero per image. This extreme sparsit
 ### Results
 
 | Metric | Score |
-|:-------|------:|
+|--------|-------|
 | PSNR | **37.93 dB** |
 | SSIM | **0.967** |
 | Active IoU | **0.998** |
 | False Activation Rate | **0.000** |
 
+---
 <p align="center">
   <img src="assets/task1_training_curves.png" width="70%" alt="Figure 1a"/>
 </p>
@@ -95,7 +96,7 @@ On average only **~0.06%** of pixels are nonzero per image. This extreme sparsit
 **Features:**
 
 | Type | Dimension | Components |
-|:-----|:---------:|:-----------|
+|------|-----------|------------|
 | Node | 6 | η_norm · φ_norm · E_tracks · E_ECAL · E_HCAL · r_centroid |
 | Edge | 4 | Δη · Δφ · distance · ΔE |
 
@@ -104,10 +105,12 @@ This discards the 99.94% background and operates directly on the physics-relevan
 ### Results
 
 | Metric | MLP Baseline | GraphSAGE [[3]](#references) |
-|:-------|:------------:|:----------------------------:|
+|--------|--------------|------------------------------|
 | ROC-AUC | 0.564 | **0.774** |
 | Accuracy | 54.3% | **70.6%** |
 | F1 | 0.562 | **0.727** |
+
+---
 
 <p align="center">
   <img src="assets/task2_training_curves.png" width="70%" alt="Figure 2a"/>
@@ -137,7 +140,7 @@ This discards the 99.94% background and operates directly on the physics-relevan
 2. **Denoise** — train a time-conditioned residual MLP on the latent vectors using a standard DDPM noise schedule
 
 | Component | Details |
-|:----------|:--------|
+|-----------|--------|
 | VAE (frozen) | Task 1 `JetVAE`, 256-dim latent |
 | Denoiser | 6 residual blocks · hidden 1024 · time_emb 128 |
 | Schedule | 1000 DDPM timesteps · linear β |
@@ -148,12 +151,14 @@ This discards the 99.94% background and operates directly on the physics-relevan
 ### Results
 
 | Metric | Score |
-|:-------|------:|
+|--------|-------|
 | PSNR | **30.32 dB** |
 | SSIM | **0.931** |
 | MSE | **0.0009** |
 | Generated Active Density | **66.67%** |
 | Real Active Density | **66.77%** |
+
+---
 
 <p align="center">
   <img src="assets/task3_training_curves.png" width="60%" alt="Figure 3a"/>
