@@ -1,7 +1,7 @@
 """
 task1_autoencoder.py
 ====================
-Task 1 autoencoder pipeline aligned to the DeepFalcon notebook baseline,
+Task 1 autoencoder pipeline for jet image reconstruction,
 kept modular inside the repo and using the requested channel order:
 Tracks, ECAL, HCAL.
 """
@@ -33,7 +33,7 @@ from src.config import (
 )
 from src.data_utils import load_dataset
 from src.metrics import reconstruction_summary, sparse_reconstruction_metrics
-from src.models.autoencoder import DeepFalconVAE
+from src.models.autoencoder import JetVAE
 from src.experiment_tracker import log_experiment, save_run_metrics
 
 logger = setup_logging("task1")
@@ -132,7 +132,7 @@ def fit_task1_preprocessor(
     Fit a Task 1 normalizer using the training split only.
 
     The detector-reference recipe follows the original Evaluation Test
-    DeepFalcon notebook:
+    Reference preprocessing pipeline:
       - one special channel gets log/percentile scaling with a top-end boost
       - the remaining channels use mean/std scaling mapped into [0, 1]
     """
@@ -255,7 +255,7 @@ def reference_vae_loss(
     beta: float = 1e-4,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Exact DeepFalcon-style VAE loss:
+    Reference VAE loss:
       - weighted MSE summed across the full batch
       - KL divergence summed across the full batch
       - total = recon + beta * KL
@@ -1044,7 +1044,7 @@ def run_experiment(
             val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
             test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
 
-            model = DeepFalconVAE(latent_dim=settings["latent_dim"]).to(device)
+            model = JetVAE(latent_dim=settings["latent_dim"]).to(device)
             if device.type == "cuda":
                 model = model.to(memory_format=torch.channels_last)  # H100 tensor core layout
             n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

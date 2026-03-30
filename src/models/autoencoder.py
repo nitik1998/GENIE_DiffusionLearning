@@ -68,9 +68,10 @@ class ConvAutoEncoder(nn.Module):
     def get_latent(self, x: torch.Tensor) -> torch.Tensor:
         return self.encode(x)
 
-class DeepFalconVAE(nn.Module):
+class JetVAE(nn.Module):
     """
-    VAE architecture matching the Evaluation Test DeepFalcon notebook.
+    Variational Autoencoder for calorimeter jet images.
+    5-stage convolutional encoder → 256-dim latent → transpose-conv decoder.
     """
 
     def __init__(self, in_channels: int = 3, latent_dim: int = 256, input_size: tuple[int, int] = (125, 125)) -> None:
@@ -158,3 +159,6 @@ class DeepFalconVAE(nn.Module):
         mu, _, _ = self.encode(x)
         return mu
 
+
+# Backward compatibility alias for checkpoints saved with the old name
+DeepFalconVAE = JetVAE

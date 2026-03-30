@@ -53,7 +53,7 @@ from src.metrics import reconstruction_summary
 from src.models.diffusion_unet import SimpleUNet
 from src.models.diffusion_core import DDPM
 from src.models.latent_denoiser import LatentDenoiser
-from src.models.autoencoder import ConvAutoEncoder, DeepFalconVAE
+from src.models.autoencoder import ConvAutoEncoder, JetVAE
 from src.experiment_tracker import log_experiment, save_run_metrics
 
 logger = setup_logging("task3")
@@ -397,7 +397,7 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
         
         # Detect architecture from state keys
         if "fc_mu.weight" in state:
-            vae = DeepFalconVAE(in_channels=3, latent_dim=256).to(device)
+            vae = JetVAE(in_channels=3, latent_dim=256).to(device)
         else:
             vae = ConvAutoEncoder(in_channels=3).to(device)
         vae.load_state_dict(state)
