@@ -48,6 +48,7 @@ from src.config import (
     CHECKPOINT_DIR, CHANNEL_NAMES, get_auto_batch_size,
 )
 from src.data_utils import load_dataset, JetImageDataset, make_splits
+from src.task1_autoencoder import apply_task1_preprocessor
 from src.metrics import reconstruction_summary
 from src.models.diffusion_unet import SimpleUNet
 from src.models.diffusion_core import DDPM
@@ -368,15 +369,6 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
     # Data
     X, y = load_dataset(max_events=args.max_events)
     train_idx, val_idx, test_idx = make_splits(X, y, seed=args.seed)
-    train_ds = JetImageDataset(X[train_idx], y[train_idx])
-    val_ds = JetImageDataset(X[val_idx], y[val_idx])
-    test_ds = JetImageDataset(X[test_idx], y[test_idx])
-
-    batch_size = args.batch_size if args.batch_size > 0 else get_auto_batch_size(task_num=3)
-    pin = device.type == "cuda"
-    # num_workers=0: prevents Colab /dev/shm exhaustion crash
-    img_loader_train = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
-    img_loader_val = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
 
     # ── Step 1: Get or train VAE ──
     # Auto-discover Task 1 checkpoint if not specified
@@ -393,12 +385,15 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
                 vae_ckpt = full
                 break
     vae = None
+    preprocessor_params = None
     if vae_ckpt and os.path.exists(vae_ckpt):
         logger.info("Loading VAE from %s", vae_ckpt)
         ckpt = torch.load(vae_ckpt, map_location=device, weights_only=False)
         state = ckpt.get("model_state_dict", ckpt)
         # Strip torch.compile prefix if present
         state = {k.replace('_orig_mod.', ''): v for k, v in state.items()}
+        # Load preprocessor params saved during Task 1 training
+        preprocessor_params = ckpt.get("preprocessor_params", None)
         
         # Detect architecture from state keys
         if "fc_mu.weight" in state:
@@ -407,10 +402,36 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
             vae = ConvAutoEncoder(in_channels=3).to(device)
         vae.load_state_dict(state)
         logger.info("Loaded VAE: %s", vae.__class__.__name__)
+        if preprocessor_params:
+            logger.info("Loaded VAE preprocessor: %s", [p['type'] for p in preprocessor_params])
     else:
+        # Auto-train a lightweight VAE (uses JetImageDataset defaults)
+        pass  # Will be handled below
+
+    # Preprocess data using the VAE's own preprocessing pipeline
+    if preprocessor_params:
+        logger.info("Applying VAE's detector_reference preprocessing...")
+        X_proc = apply_task1_preprocessor(X, preprocessor_params)
+        X_train = torch.from_numpy(X_proc[train_idx]).float()
+        X_val = torch.from_numpy(X_proc[val_idx]).float()
+        X_test = torch.from_numpy(X_proc[test_idx]).float()
+        y_train = torch.from_numpy(y[train_idx]).long()
+        y_val = torch.from_numpy(y[val_idx]).long()
+        y_test = torch.from_numpy(y[test_idx]).long()
+        train_ds = torch.utils.data.TensorDataset(X_train, y_train)
+        val_ds = torch.utils.data.TensorDataset(X_val, y_val)
+        test_ds = torch.utils.data.TensorDataset(X_test, y_test)
+    else:
+        logger.info("No VAE preprocessor found, using default JetImageDataset...")
+        train_ds = JetImageDataset(X[train_idx], y[train_idx])
+        val_ds = JetImageDataset(X[val_idx], y[val_idx])
+        test_ds = JetImageDataset(X[test_idx], y[test_idx])
+
+    if vae is None:
         # Auto-train a lightweight VAE
-        train_loader_vae = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=pin)
-        val_loader_vae = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
+        batch_size_vae = args.batch_size if args.batch_size > 0 else get_auto_batch_size(task_num=3)
+        train_loader_vae = DataLoader(train_ds, batch_size=batch_size_vae, shuffle=True, num_workers=0, pin_memory=(device.type == "cuda"))
+        val_loader_vae = DataLoader(val_ds, batch_size=batch_size_vae, shuffle=False, num_workers=0, pin_memory=(device.type == "cuda"))
         vae = train_quick_vae(train_loader_vae, val_loader_vae, device, epochs=20)
 
     vae.eval()
@@ -419,6 +440,11 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
     logger.info("VAE frozen (%s trainable params)", "0")
 
     # ── Step 2: Pre-encode dataset into latent space ──
+    batch_size = args.batch_size if args.batch_size > 0 else get_auto_batch_size(task_num=3)
+    pin = device.type == "cuda"
+    img_loader_train = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
+    img_loader_val = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
+
     logger.info("Pre-encoding images into latent vectors...")
     latent_spatial_shape = None  # Track conv latent shape for ConvAutoEncoder
     def encode_dataset(loader):
