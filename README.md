@@ -68,16 +68,19 @@ A 5-stage convolutional VAE (`JetVAE`) with transpose-convolution decoder. The m
 | Background False Activation | **0.000** |
 
 <p align="center">
-  <img src="assets/task1_training_curves.png" width="45%" alt="Task 1 Training Curves"/>
-  &nbsp;&nbsp;
-  <img src="assets/task1_best_reconstruction.png" width="45%" alt="Task 1 Best Reconstruction Samples"/>
+  <img src="assets/task1_training_curves.png" alt="Figure 1a — Task 1 Training Curves"/>
 </p>
-<p align="center"><em>Left: Training and validation loss curves over 200 epochs. Right: Best reconstruction samples.</em></p>
+<p align="center"><em>Figure 1a — Training and validation loss curves over 200 epochs.</em></p>
 
 <p align="center">
-  <img src="assets/task1_original_vs_reconstructed.png" width="80%" alt="Task 1 Channel-wise Reconstruction"/>
+  <img src="assets/task1_best_reconstruction.png" alt="Figure 1b — Task 1 Best Reconstruction Samples"/>
 </p>
-<p align="center"><em>Original (columns 1–3) vs. VAE reconstruction (columns 4–6). Each column shows one detector channel (Tracks, ECAL, HCAL).</em></p>
+<p align="center"><em>Figure 1b — Best VAE reconstruction samples at convergence.</em></p>
+
+<p align="center">
+  <img src="assets/task1_original_vs_reconstructed.png" alt="Figure 1c — Task 1 Channel-wise Reconstruction"/>
+</p>
+<p align="center"><em>Figure 1c — Original (left 3 columns) vs. VAE reconstruction (right 3 columns). Channels: Tracks, ECAL, HCAL.</em></p>
 
 ### Discussion
 
@@ -115,16 +118,19 @@ This representation discards the 99.94% background pixels and operates directly 
 | F1 Score | 0.562 | **0.727** |
 
 <p align="center">
-  <img src="assets/task2_training_curves.png" width="45%" alt="Task 2 Training Curves"/>
-  &nbsp;&nbsp;
-  <img src="assets/task2_roc_curve.png" width="45%" alt="Task 2 ROC Curve"/>
+  <img src="assets/task2_training_curves.png" alt="Figure 2a — Task 2 Training Curves"/>
 </p>
-<p align="center"><em>Left: Training and validation loss/accuracy curves. Right: ROC curve — GraphSAGE (AUC 0.774) vs. MLP baseline (AUC 0.564).</em></p>
+<p align="center"><em>Figure 2a — Training and validation loss/accuracy curves over 30 epochs.</em></p>
 
 <p align="center">
-  <img src="assets/task2_pipeline.png" width="80%" alt="Task 2 Image-to-Graph Pipeline"/>
+  <img src="assets/task2_roc_curve.png" alt="Figure 2b — Task 2 ROC Curve"/>
 </p>
-<p align="center"><em>Pipeline visualization: raw detector image → point cloud → k-NN graph for a single jet event.</em></p>
+<p align="center"><em>Figure 2b — ROC curve: GraphSAGE (AUC 0.774) vs. MLP baseline (AUC 0.564).</em></p>
+
+<p align="center">
+  <img src="assets/task2_pipeline.png" alt="Figure 2c — Image-to-Graph Pipeline"/>
+</p>
+<p align="center"><em>Figure 2c — Pipeline: raw detector image → point cloud → k-NN graph for a single jet event.</em></p>
 
 ### Discussion
 
@@ -164,11 +170,14 @@ The pipeline has two stages:
 | Real Active Density | **66.77%** |
 
 <p align="center">
-  <img src="assets/task3_training_curves.png" width="45%" alt="Task 3 Training Curves"/>
-  &nbsp;&nbsp;
-  <img src="assets/task3_generated_samples.png" width="45%" alt="Task 3 Generated Samples"/>
+  <img src="assets/task3_training_curves.png" alt="Figure 3a — Task 3 Training Curves"/>
 </p>
-<p align="center"><em>Left: Latent MSE loss convergence over 30 epochs. Right: Original (columns 1–3) vs. generated (columns 4–6) jet images, per-channel.</em></p>
+<p align="center"><em>Figure 3a — Latent MSE loss convergence over 30 epochs.</em></p>
+
+<p align="center">
+  <img src="assets/task3_generated_samples.png" alt="Figure 3b — Generated Jet Samples"/>
+</p>
+<p align="center"><em>Figure 3b — Original (left 3 columns) vs. generated (right 3 columns) jet images, per-channel.</em></p>
 
 ### Discussion
 
@@ -243,7 +252,6 @@ Each task has a companion notebook with a `RUN_MODE` toggle (`"sanity"` for quic
 ├── notebooks/                    # Colab-ready notebooks (3 tasks)
 ├── results_from_colab/           # Final trained models & metrics
 ├── assets/                       # README figures
-├── docs/                         # Proposal ideas and reports
 └── requirements.txt
 ```
 
