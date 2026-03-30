@@ -221,15 +221,24 @@ python src/task3_diffusion.py --max-events 64 --epochs 1 --timesteps 20 --force-
 
 ```
 ├── src/
+│   ├── __init__.py
 │   ├── config.py                 # Paths, GPU detection, logging
 │   ├── data_utils.py             # Data loading, preprocessing, splitting
 │   ├── metrics.py                # PSNR, SSIM, active density metrics
 │   ├── experiment_tracker.py     # Experiment logging and checkpointing
+│   ├── eda.py                    # Exploratory data analysis
 │   ├── task1_autoencoder.py      # VAE training pipeline
 │   ├── task2_gnn.py              # GNN classification pipeline
 │   ├── task3_diffusion.py        # Latent diffusion pipeline
+│   ├── visualize_task2_pipeline.py
+│   ├── data/
+│   │   ├── dataset.py            # Dataset classes
+│   │   ├── graph_builder.py      # Point cloud → graph conversion
+│   │   └── transforms.py         # Data transforms
 │   └── models/
+│       ├── __init__.py
 │       ├── autoencoder.py        # JetVAE, ConvAutoEncoder
+│       ├── gnn.py                # GraphSAGE classifier
 │       ├── diffusion_core.py     # DDPM noise scheduler
 │       ├── diffusion_unet.py     # SimpleUNet (pixel-space baseline)
 │       └── latent_denoiser.py    # Time-conditioned residual MLP
