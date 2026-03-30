@@ -1044,13 +1044,23 @@ def run_experiment(
     while True:
         try:
             pin = device.type == "cuda"
+            if device.type == "cuda":
+                torch.backends.cudnn.benchmark = True
+                torch.set_float32_matmul_precision('high')  # Enable TF32 on H100/A100
             train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=pin, persistent_workers=True)
             val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=pin, persistent_workers=True)
             test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=pin, persistent_workers=True)
 
             model = DeepFalconVAE(latent_dim=settings["latent_dim"]).to(device)
+            if device.type == "cuda":
+                model = model.to(memory_format=torch.channels_last)  # H100 tensor core layout
             n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
             logger.info("Reference VAE — %s trainable parameters", f"{n_params:,}")
+            try:
+                model = torch.compile(model)
+                logger.info("torch.compile() enabled — expect warmup on first batch")
+            except Exception as e:
+                logger.warning("torch.compile() not available: %s (running uncompiled)", e)
 
             optimizer_name = str(settings.get("optimizer", "adamw")).lower()
             if optimizer_name == "adam":
