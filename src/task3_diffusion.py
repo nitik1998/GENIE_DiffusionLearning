@@ -483,7 +483,7 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
     z_val_loader = DataLoader(z_val_ds, batch_size=batch_size, shuffle=False)
 
     # ── Step 3: Train latent denoiser ──
-    denoiser = LatentDenoiser(latent_dim=latent_dim, hidden_dim=512, time_emb_dim=128).to(device)
+    denoiser = LatentDenoiser(latent_dim=latent_dim, hidden_dim=1024, time_emb_dim=128, n_layers=6).to(device)
     ddpm = DDPM(denoiser, timesteps=args.timesteps, device=device)
     optimizer = torch.optim.AdamW(denoiser.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-6)
@@ -633,8 +633,8 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=0, help="Batch size (0=auto)")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--patience", type=int, default=7, help="Early stopping patience (0=disabled)")
-    parser.add_argument("--timesteps", type=int, default=200, help="DDPM noise schedule steps")
+    parser.add_argument("--patience", type=int, default=0, help="Early stopping patience (0=disabled)")
+    parser.add_argument("--timesteps", type=int, default=1000, help="DDPM noise schedule steps")
     parser.add_argument("--n-samples", type=int, default=8, help="Number of samples for evaluation")
     parser.add_argument("--max-events", type=int, default=None, help="Limit events (None=all)")
     parser.add_argument("--force-cpu", action="store_true")
