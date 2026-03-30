@@ -130,7 +130,7 @@ class DeepFalconVAE(nn.Module):
 
     def encode(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x = self.encoder(x)
-        x = x.view(x.size(0), -1)
+        x = x.reshape(x.size(0), -1)
         mu = self.fc_mu(x)
         logvar = torch.clamp(self.fc_logvar(x), min=-20.0, max=20.0)
         std = torch.exp(0.5 * logvar)
@@ -140,7 +140,7 @@ class DeepFalconVAE(nn.Module):
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         x = self.decoder_input(z)
-        x = x.view(x.size(0), *self.encoder_output_size)
+        x = x.reshape(x.size(0), *self.encoder_output_size)
         x = self.decoder(x)
         x = F.interpolate(x, size=self.input_size, mode="bilinear", align_corners=False)
         return x
