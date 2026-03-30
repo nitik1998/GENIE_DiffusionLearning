@@ -1,0 +1,422 @@
+\documentclass[11pt]{article}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{hyperref}
+
+\captionsetup{font=small, labelfont=bf}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.35em}
+\renewcommand{\arraystretch}{1.12}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue
+}
+
+\title{\bfseries GENIE: Learning Latent Structure with Diffusion Models\\[0.25em]
+\large Quark/Gluon Jet Reconstruction, Classification, and Generation}
+\author{ML4SCI GSoC 2026 Evaluation \\ Nitik Jain}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study representation learning for sparse quark/gluon jet detector images, where each event is a $125 \times 125 \times 3$ tensor comprising Tracks, ECAL, and HCAL channels. The pipeline evaluates three complementary tasks: sparse-image reconstruction with a variational autoencoder, jet classification with a graph neural network, and event generation with latent diffusion. The reconstruction model attains 37.93 dB PSNR, 0.967 SSIM, and 0.998 active IoU, indicating high support fidelity on non-zero detector cells. The graph classifier reaches 0.774 ROC-AUC and 70.6\% accuracy, outperforming a non-graph baseline by a wide margin. Latent diffusion reaches 30.32 dB PSNR and 0.931 SSIM while matching active density closely, with 66.67\% generated density versus 66.77\% in the reference outputs. Collectively, the results show that representation choice is the dominant factor for sparse detector modeling: dense image-space methods are fragile, whereas graph and latent-space formulations align more naturally with the underlying event structure.
+\end{abstract}
+
+\section{Introduction}
+Quark and gluon jets produce highly localized energy deposits with strong channel-dependent structure and extreme background sparsity. In this setting, standard dense-image objectives are often poorly matched to the data distribution, because most spatial locations contain zero signal and contribute little physically meaningful information. This creates a fundamental optimization asymmetry: a model can improve aggregate pixel-wise losses by fitting the background well while still failing to recover the detector cells that define the event morphology.
+
+The experimental pipeline addresses this challenge at three levels. Task 1 learns a compressed latent representation of detector images using a variational autoencoder (VAE). Task 2 reparameterizes sparse detector activity as a graph in normalized $(\eta,\phi)$ coordinates and performs classification with GraphSAGE. Task 3 moves generation into the learned latent space and applies diffusion there rather than directly in pixel space. This progression reflects a common theme across the results: the closer the representation is to the geometry and sparsity pattern of the detector, the stronger the empirical performance.
+
+\section{Dataset \& EDA}
+\[
+x \in \mathbb{R}^{125 \times 125 \times 3},
+\qquad
+x = \left[x^{\mathrm{Tracks}}, x^{\mathrm{ECAL}}, x^{\mathrm{HCAL}}\right].
+\]
+
+For a detector image $x$, the active-pixel density is
+\[
+\rho(x) = \frac{\left\|\mathbf{1}[x > 0]\right\|_0}{125 \cdot 125 \cdot 3}.
+\]
+
+\begin{itemize}
+    \item Total dataset size: 139,306 jet events.
+    \item Detector channels: Tracks, ECAL, and HCAL.
+    \item EDA subset size: 500 events, with 242 quark and 258 gluon jets.
+    \item Mean active density on the EDA subset: 1.54\%, with median 1.50\%.
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Dataset and EDA summary statistics.}
+\begin{tabular}{lc}
+\toprule
+\textbf{Statistic} & \textbf{Value} \\
+\midrule
+Total events & 139,306 \\
+Image resolution & $125 \times 125 \times 3$ \\
+EDA subset size & 500 \\
+Mean active pixels & 721.186 \\
+Mean active density & 1.54\% \\
+Median active density & 1.50\% \\
+\bottomrule
+\end{tabular}
+\label{tab:eda_stats}
+\end{table}
+
+Raw detector examples are shown in Figure~\ref{fig:eda_samples}. The three channels exhibit markedly different morphology: Tracks contain extremely sparse, high-localization activations; ECAL responses are broader and more clustered; HCAL deposits are coarser and spatially compact.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{outputs/eda/sample_events.png}
+    \caption{Representative jet events across the three detector channels. Top rows correspond to quark examples and bottom rows to gluon examples.}
+    \label{fig:eda_samples}
+\end{figure}
+
+Figure~\ref{fig:eda_distributions} summarizes the empirical distribution of non-zero detector responses. The long-tailed structure confirms that most active cells are low intensity, with a comparatively small number of higher-energy deposits carrying most of the visually salient structure.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{outputs/eda/channel_distributions.png}
+    \caption{Per-channel distributions of non-zero detector responses on the EDA subset.}
+    \label{fig:eda_distributions}
+\end{figure}
+
+Figure~\ref{fig:eda_normalized} shows the normalized model inputs after channel-specific preprocessing. The normalization step amplifies low-amplitude but informative activations, especially in ECAL, while preserving the sparse support that governs downstream learning.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{results_from_colab/task1_autoencoder/normalized_input_samples.png}
+    \caption{Raw detector images and their normalized counterparts used by the Task 1 model.}
+    \label{fig:eda_normalized}
+\end{figure}
+
+\section{Task 1: Variational Autoencoder}
+
+\subsection{Short Description}
+Task 1 learns a compact latent representation of sparse detector images and reconstructs all three channels jointly. The main technical objective is not merely low global reconstruction error, but accurate recovery of the rare non-zero support that defines jet structure.
+
+\subsection{Methodology}
+\begin{itemize}
+    \item Architecture: 5-stage convolutional VAE (\texttt{JetVAE}) with a transpose-convolution decoder and latent dimension 256.
+    \item Input/Output: $x \in \mathbb{R}^{125 \times 125 \times 3}$ is mapped to latent code $z \in \mathbb{R}^{256}$ and decoded to $\hat{x}$ of matching spatial resolution.
+    \item Preprocessing: \texttt{detector\_reference}; the Tracks channel is log-scaled, while ECAL and HCAL are normalized using detector-specific statistics. A support-aware weighting scheme emphasizes errors on active detector cells.
+\end{itemize}
+
+The encoder parameterizes a Gaussian posterior
+\[
+q_{\phi}(z \mid x) = \mathcal{N}\!\left(\mu_{\phi}(x), \mathrm{diag}\!\left(\sigma_{\phi}^{2}(x)\right)\right),
+\]
+and the decoder reconstructs $\hat{x} = p_{\theta}(z)$. Let
+\[
+M = \mathbf{1}[x > 0]
+\]
+denote the active-pixel mask. The reconstruction term is support-aware:
+\[
+\mathcal{L}_{\mathrm{recon}}
+=
+\|(1-M)\odot(x-\hat{x})\|_2^2
+\;+\;
+\lambda \|M\odot(x-\hat{x})\|_2^2,
+\qquad \lambda = 4.
+\]
+The full VAE objective is
+\[
+\mathcal{L}_{\mathrm{VAE}}
+=
+\mathcal{L}_{\mathrm{recon}}
+\;+\;
+\beta\, D_{\mathrm{KL}}\!\left(q_{\phi}(z \mid x)\,\|\,\mathcal{N}(0,I)\right),
+\]
+with $\beta$ warmed up during training.
+
+\subsection{Training Configuration}
+\begin{table}[H]
+\centering
+\small
+\caption{Task 1 optimization and architecture settings.}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Learning rate & $1 \times 10^{-3}$ \\
+Batch size & 512 \\
+Epochs & 200 \\
+Optimizer & Adam \\
+Loss function & Weighted MSE reconstruction + KL divergence \\
+Augmentations & None reported \\
+Latent dimension & 256 \\
+KL warmup & 100 epochs \\
+\bottomrule
+\end{tabular}
+\label{tab:task1_config}
+\end{table}
+
+\subsection{Training Behavior}
+Figure~\ref{fig:task1_loss} shows the optimization trajectory. The total loss drops rapidly in early epochs and then flattens, while the reconstruction and KL components stabilize on a similar scale by the end of training. This behavior is consistent with a VAE that avoids posterior collapse while still prioritizing spatial fidelity.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{results_from_colab/task1_autoencoder/training_curves.png}
+    \caption{Task 1 optimization dynamics, including train/validation loss and the reconstruction/KL components.}
+    \label{fig:task1_loss}
+\end{figure}
+
+\subsection{Results}
+Figure~\ref{fig:task1_results} shows representative channel-wise reconstructions. The model preserves the overall event morphology across channels, with particularly strong fidelity in ECAL and HCAL. The metrics in Table~\ref{tab:task1_results} indicate that support recovery is strong: active IoU is nearly 1 and background false activation is zero, meaning the model reconstructs active structure without introducing spurious hits in empty regions.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{results_from_colab/task1_autoencoder/original_vs_reconstructed.png}
+    \caption{Task 1 original versus reconstructed detector images, shown channel-wise.}
+    \label{fig:task1_results}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Task 1 reconstruction metrics.}
+\begin{tabular}{lc}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+PSNR & 37.93 dB \\
+SSIM & 0.967 \\
+Active IoU & 0.998 \\
+Nonzero MSE & 0.000241 \\
+Background false activation & 0.000 \\
+\bottomrule
+\end{tabular}
+\label{tab:task1_results}
+\end{table}
+
+\subsection{Failure Analysis}
+The main limitation of the image-based autoencoder is the mismatch between dense convolutional reconstruction objectives and sparse detector support. Because $\rho(x) \ll 1$, a uniform pixel-wise loss is dominated by background cells. In that regime, the model can reduce global error by producing smooth, low-amplitude reconstructions rather than recovering sharp, localized hits. The practical consequence is visible blurring, especially in the Tracks channel and in highly localized ECAL/HCAL deposits. This failure mode is structural rather than incidental: it reflects the difficulty of applying dense image models to detector tensors where the physically relevant signal occupies only a small fraction of spatial locations.
+
+\section{Task 2: Graph Neural Network Classification}
+
+\subsection{Short Description}
+Task 2 performs quark/gluon classification after converting active detector cells into a sparse graph. This removes most of the empty spatial support and shifts learning from dense image statistics to relational structure in detector coordinates.
+
+\subsection{Methodology}
+\begin{itemize}
+    \item Architecture: GraphSAGE classifier on a k-NN graph with $k=8$.
+    \item Input/Output: non-zero detector cells are converted into an $(\eta,\phi)$ point cloud and then into a graph $G=(V,E)$; the model outputs a binary quark/gluon probability.
+    \item Preprocessing: node features are $(\eta_{\mathrm{norm}}, \phi_{\mathrm{norm}}, E_{\mathrm{Tracks}}, E_{\mathrm{ECAL}}, E_{\mathrm{HCAL}}, r_{\mathrm{centroid}})$ and edge features are $(\Delta\eta, \Delta\phi, \mathrm{distance}, \Delta E)$.
+\end{itemize}
+
+For graph $G_i$, the classifier predicts
+\[
+p_i = \sigma\!\left(f_{\theta}(G_i)\right),
+\]
+where $\sigma(\cdot)$ is the logistic sigmoid. Training uses a weighted binary cross-entropy objective:
+\[
+\mathcal{L}_{\mathrm{cls}}
+=
+-\frac{1}{N}\sum_{i=1}^{N}
+\left[
+w_{+}y_i \log p_i + (1-y_i)\log(1-p_i)
+\right].
+\]
+This formulation is appropriate for binary jet labeling and allows positive-class reweighting when class balance or calibration requires it.
+
+Figure~\ref{fig:task2_pipeline} illustrates the image-to-point-cloud-to-graph conversion. The key modeling choice is that message passing occurs on active detector structure rather than on a mostly empty image grid.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{results_from_colab/task2_graph_classifier/task2_pipeline.png}
+    \caption{Task 2 pipeline: detector image to point cloud to $k$-NN graph.}
+    \label{fig:task2_pipeline}
+\end{figure}
+
+\subsection{Training Configuration}
+\begin{table}[H]
+\centering
+\small
+\caption{Task 2 optimization and graph-construction settings.}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Learning rate & $1 \times 10^{-3}$ \\
+Batch size & 512 \\
+Epochs & 30 \\
+Optimizer & AdamW \\
+Loss function & BCEWithLogitsLoss \\
+Augmentations & None reported \\
+$k$ for k-NN graph & 8 \\
+Hidden dimension & 64 \\
+Dropout & 0.4 \\
+\bottomrule
+\end{tabular}
+\label{tab:task2_config}
+\end{table}
+
+\subsection{Training Behavior}
+Figure~\ref{fig:task2_loss} shows monotonic reduction in training loss together with a steady increase in validation ROC-AUC. The validation metric saturates near 0.774, suggesting that the graph representation captures class-separating structure early and then refines it gradually over later epochs.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{results_from_colab/task2_graph_classifier/training_curves.png}
+    \caption{Task 2 training loss and validation ROC-AUC during GraphSAGE optimization.}
+    \label{fig:task2_loss}
+\end{figure}
+
+\subsection{Results}
+Figure~\ref{fig:task2_roc} shows the ROC curve for graph-based classification. The model reaches AUC 0.7736, substantially above the non-graph baseline at 0.5641. This margin indicates that topological and localized relational cues are informative for quark/gluon discrimination and are not captured well by simple pooled image statistics.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.72\textwidth]{results_from_colab/task2_graph_classifier/roc_curve.png}
+    \caption{Task 2 ROC curve comparing the graph classifier against the mean-pooled logistic baseline.}
+    \label{fig:task2_roc}
+\end{figure}
+
+Table~\ref{tab:task2_confusion} gives the confusion matrix in LaTeX form. The matrix shows nontrivial residual confusion between the two jet classes, with stronger recovery for gluon events than quark events, consistent with class-dependent calibration effects.
+\begin{table}[H]
+\centering
+\small
+\caption{Task 2 confusion matrix.}
+\begin{tabular}{lcc}
+\toprule
+\textbf{True class} & \textbf{Predicted quark} & \textbf{Predicted gluon} \\
+\midrule
+Quark & \textbf{6,575} & 3,887 \\
+Gluon & 2,260 & \textbf{8,175} \\
+\bottomrule
+\end{tabular}
+\label{tab:task2_confusion}
+\end{table}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Task 2 classification metrics.}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Baseline} & \textbf{GraphSAGE} \\
+\midrule
+ROC-AUC & 0.564 & 0.774 \\
+Accuracy & 54.3\% & 70.6\% \\
+F1 & 0.562 & 0.727 \\
+\bottomrule
+\end{tabular}
+\label{tab:task2_results}
+\end{table}
+
+\subsection{Failure Analysis}
+The graph formulation improves alignment with detector sparsity, but it introduces sensitivity to representation design. Node construction, feature selection, and graph topology all directly affect what information is available to the classifier. In particular, converting detector images into point clouds can discard low-amplitude information through thresholding, while a suboptimal choice of $k$ in the $k$-NN graph can either underconnect the event or introduce noisy edges. The remaining classification errors suggest that graph structure is necessary but not sufficient: performance also depends on how well the graph encodes class-discriminative geometry and on how well the resulting logits are calibrated across classes.
+
+\section{Task 3: Latent Diffusion}
+
+\subsection{Short Description}
+Task 3 generates new jet events by performing diffusion in the latent space learned by the autoencoder from Task 1. The central idea is to move the denoising problem away from raw pixel space and into a lower-dimensional representation that already encodes detector structure.
+
+\subsection{Methodology}
+\begin{itemize}
+    \item Architecture: latent DDPM with a time-conditioned residual MLP denoiser operating in a frozen 256-dimensional VAE latent space.
+    \item Input/Output: detector image $x$ is encoded into latent vector $z_0$; diffusion and denoising are performed in latent space; the denoised latent is decoded back into image space.
+    \item Preprocessing: the same detector-specific normalization used in Task 1 is reused so that the latent model is consistent with the autoencoder representation.
+\end{itemize}
+
+The forward diffusion process is defined in latent space:
+\[
+q(z_t \mid z_{t-1}) = \mathcal{N}\!\left(\sqrt{1-\beta_t}\,z_{t-1}, \beta_t I\right),
+\]
+or equivalently
+\[
+z_t = \sqrt{\bar{\alpha}_t}\,z_0 + \sqrt{1-\bar{\alpha}_t}\,\epsilon,
+\qquad
+\epsilon \sim \mathcal{N}(0,I).
+\]
+The denoiser $\epsilon_{\theta}(z_t,t)$ is trained with the standard noise-prediction objective
+\[
+\mathcal{L}_{\mathrm{DDPM}}
+=
+\mathbb{E}_{z_0,\epsilon,t}
+\left[
+\left\|
+\epsilon - \epsilon_{\theta}(z_t,t)
+\right\|_2^2
+\right].
+\]
+Because diffusion is applied to $z_0 \in \mathbb{R}^{256}$ rather than directly to $x \in \mathbb{R}^{125 \times 125 \times 3}$, the model denoises a representation that is already compressed and structured.
+
+\subsection{Training Configuration}
+\begin{table}[H]
+\centering
+\small
+\caption{Task 3 diffusion settings.}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Learning rate & $1 \times 10^{-4}$ \\
+Batch size & 128 \\
+Epochs & 30 \\
+Optimizer & AdamW \\
+Loss function & MSE \\
+Augmentations & None reported \\
+Latent dimension & 256 \\
+Timesteps & 1000 \\
+Noise schedule & Linear \\
+\bottomrule
+\end{tabular}
+\label{tab:task3_config}
+\end{table}
+
+\subsection{Training Behavior}
+Figure~\ref{fig:task3_loss} shows stable latent-space convergence. The training and validation curves quickly contract after the earliest epochs and then remain closely aligned, which is consistent with a diffusion model learning a well-conditioned latent distribution rather than attempting to denoise a high-dimensional sparse pixel field directly.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.72\textwidth]{results_from_colab/latent_diffusion/training_curves.png}
+    \caption{Task 3 latent diffusion training and validation loss.}
+    \label{fig:task3_loss}
+\end{figure}
+
+\subsection{Results}
+Figure~\ref{fig:task3_results} compares real and generated detector images after decoding the denoised latent vectors. The generated outputs preserve the coarse morphology of the three detector channels, and the active-density statistics in Table~\ref{tab:task3_results} show close agreement between generated and reference samples. The remaining gap relative to Task 1 reconstruction quality reflects generative modeling error on top of the autoencoder bottleneck.
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{results_from_colab/latent_diffusion/original_vs_reconstructed.png}
+    \caption{Task 3 real versus generated detector images obtained from latent diffusion.}
+    \label{fig:task3_results}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Task 3 generative metrics.}
+\begin{tabular}{lc}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+PSNR & 30.32 dB \\
+SSIM & 0.931 \\
+MSE & 0.000929 \\
+Generated active density & 66.67\% \\
+Real active density & 66.77\% \\
+\bottomrule
+\end{tabular}
+\label{tab:task3_results}
+\end{table}
+
+\subsection{Failure Analysis}
+Naive pixel-space diffusion is poorly matched to sparse detector images because the forward noising process distributes Gaussian noise over the entire image domain, while the physically relevant signal is concentrated in a tiny subset of pixels. In that setting, denoising tends to favor a diffuse, low-level background field rather than exact recovery of sparse support, producing blurry or structureless outputs. Moving diffusion into latent space changes the geometry of the learning problem: the denoiser operates on a compact representation in which detector structure has already been organized by the encoder. The empirical improvement in Task 3 therefore supports a broader conclusion that generative modeling for sparse detectors benefits strongly from structured or latent representations rather than direct pixel-space diffusion.
+
+\section{Cross-Task Insight}
+Across all three tasks, the dominant challenge is representation mismatch rather than insufficient model capacity. Dense image-space models are forced to optimize over a domain where most pixels are inactive, making them highly sensitive to background-dominated losses. Graph and latent-space models reduce this mismatch by concentrating computation on meaningful detector support or on compressed variables that already encode that support. The experimental pattern across reconstruction, classification, and generation is therefore consistent: performance improves when the representation more faithfully reflects the sparsity and geometry of the underlying detector process.
+
+\section*{References}
+\small
+\begin{enumerate}
+    \item A. Baldini et al., ``Graph Generative Models for Fast Detector Simulations in High Energy Physics,'' NeurIPS Workshop on Machine Learning and the Physical Sciences, 2021.
+    \item J. Ho, A. Jain, and P. Abbeel, ``Denoising Diffusion Probabilistic Models,'' NeurIPS, 2020.
+    \item W. Hamilton, R. Ying, and J. Leskovec, ``Inductive Representation Learning on Large Graphs,'' NeurIPS, 2017.
+    \item D. P. Kingma and M. Welling, ``Auto-Encoding Variational Bayes,'' ICLR, 2014.
+\end{enumerate}
+
+\end{document}

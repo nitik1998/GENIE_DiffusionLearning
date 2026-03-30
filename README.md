@@ -3,6 +3,8 @@
 > **ML4SCI GSoC 2026 Evaluation** · Quark/Gluon Jet Generation & Classification  
 > *Applicant: Nitik Jain · Organization: [ML4SCI](https://ml4sci.org/)*
 
+A detailed technical report for this repository is available here: [PDF report](main.pdf).
+
 This repository implements a three-task evaluation pipeline for the [GENIE project](https://ml4sci.org/gsoc/projects/2025/project_GENIE.html), working with 139,306 calorimeter jet images from the quark/gluon dataset [[1]](#references). Each task builds on the previous: learn compact latent representations (Task 1), classify jet type using graph structure (Task 2), and generate new physics-realistic jets via latent diffusion (Task 3).
 
 ---
