@@ -242,8 +242,9 @@ def run_image_ddpm(args: argparse.Namespace) -> None:
 
     batch_size = args.batch_size if args.batch_size > 0 else get_auto_batch_size(task_num=3)
     pin = device.type == "cuda"
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=pin)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=pin)
+    # num_workers=0: prevents Colab /dev/shm exhaustion crash
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=pin)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
 
     # Model
     model = SimpleUNet(in_channels=3, base_channels=64).to(device)
@@ -300,7 +301,7 @@ def run_image_ddpm(args: argparse.Namespace) -> None:
 
         if vl_loss < best_val_loss:
             best_val_loss = vl_loss
-            best_state = {k: v.clone().detach() for k, v in model.state_dict().items()}
+            best_state = {k: v.cpu() for k, v in model.state_dict().items()}  # CPU to avoid VRAM frag
             patience_counter = 0
             marker = " *"
         else:
@@ -373,14 +374,28 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
 
     batch_size = args.batch_size if args.batch_size > 0 else get_auto_batch_size(task_num=3)
     pin = device.type == "cuda"
-    img_loader_train = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=pin)
-    img_loader_val = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=pin)
+    # num_workers=0: prevents Colab /dev/shm exhaustion crash
+    img_loader_train = DataLoader(train_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
+    img_loader_val = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
 
     # ── Step 1: Get or train VAE ──
+    # Auto-discover Task 1 checkpoint if not specified
+    vae_ckpt = args.vae_checkpoint
+    if not vae_ckpt or not os.path.exists(vae_ckpt):
+        for candidate in [
+            "results_from_colab/task1_autoencoder/best_model.pt",
+            "results_from_colab/task1_autoencoder/model_checkpoint.pt",
+            os.path.join(os.path.expanduser("~"), ".cache/genie/task1/best_model.pt"),
+        ]:
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            full = os.path.join(repo_root, candidate)
+            if os.path.exists(full):
+                vae_ckpt = full
+                break
     vae = None
-    if args.vae_checkpoint and os.path.exists(args.vae_checkpoint):
-        logger.info("Loading VAE from %s", args.vae_checkpoint)
-        ckpt = torch.load(args.vae_checkpoint, map_location=device, weights_only=False)
+    if vae_ckpt and os.path.exists(vae_ckpt):
+        logger.info("Loading VAE from %s", vae_ckpt)
+        ckpt = torch.load(vae_ckpt, map_location=device, weights_only=False)
         state = ckpt.get("model_state_dict", ckpt)
         # Detect architecture from state keys
         if "fc_mu.weight" in state:
@@ -391,8 +406,8 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
         logger.info("Loaded VAE: %s", vae.__class__.__name__)
     else:
         # Auto-train a lightweight VAE
-        train_loader_vae = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=pin)
-        val_loader_vae = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=pin)
+        train_loader_vae = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=pin)
+        val_loader_vae = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
         vae = train_quick_vae(train_loader_vae, val_loader_vae, device, epochs=20)
 
     vae.eval()
@@ -421,6 +436,11 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
     z_val = encode_dataset(img_loader_val)
     latent_dim = z_train.shape[1]
     logger.info("Latent dim: %d, train: %d, val: %d", latent_dim, len(z_train), len(z_val))
+
+    # Free the massive raw image arrays — latents are all we need for training
+    import gc
+    del train_ds, val_ds, img_loader_train, img_loader_val
+    gc.collect()
 
     # Normalize latents for stable diffusion
     z_mean = z_train.mean(dim=0)
@@ -482,7 +502,7 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
 
         if vl_loss < best_val_loss:
             best_val_loss = vl_loss
-            best_state = copy.deepcopy(denoiser.state_dict())
+            best_state = {k: v.cpu() for k, v in denoiser.state_dict().items()}  # CPU to avoid VRAM frag
             patience_counter = 0
             marker = " *"
         else:
