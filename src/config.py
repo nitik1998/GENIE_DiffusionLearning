@@ -168,8 +168,10 @@ def get_auto_batch_size(task_num: int) -> int:
             return 128
         elif vram_gb < 30:
             return 256
+        elif vram_gb < 70:
+            return 1024
         else:
-            return 512
+            return 2048
 
 
 def ensure_dirs() -> None:

@@ -97,6 +97,7 @@ class Task1Dataset(Dataset):
         raw = X[self.indices]  # shape: [N, C, H, W]
         processed = apply_task1_preprocessor(raw, preprocessor_params)  # numpy
         self.data = torch.from_numpy(processed).float().contiguous(memory_format=torch.channels_last)  # H100-optimized layout
+        del raw, processed  # Free memory immediately
 
     def __len__(self) -> int:
         return len(self.y)
@@ -1008,6 +1009,10 @@ def run_experiment(
     train_ds, val_ds, test_ds, preprocessor_params = build_datasets(
         X, y, train_idx, val_idx, test_idx, settings
     )
+    # Free the original raw arrays to save ~30-50GB of RAM
+    del X, y, splits
+    import gc
+    gc.collect()
 
     target_epochs = int(settings.get("epochs_override", args.epochs))
     if args.epochs != DEFAULT_EPOCHS:
@@ -1032,10 +1037,10 @@ def run_experiment(
             if device.type == "cuda":
                 torch.backends.cudnn.benchmark = True
                 torch.set_float32_matmul_precision('high')  # Enable TF32 on H100/A100
-            # Data is pre-cached as tensors — use num_workers=0 to avoid IPC overhead
-            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=pin)
-            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
-            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
+            # Data is pre-cached as tensors — use 2 workers for overlap
+            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=pin, prefetch_factor=2)
+            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=pin, prefetch_factor=2)
+            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=pin, prefetch_factor=2)
 
             model = DeepFalconVAE(latent_dim=settings["latent_dim"]).to(device)
             if device.type == "cuda":
@@ -1073,6 +1078,7 @@ def run_experiment(
             print(f"=== Starting training [{exp_name}] for {target_epochs} epochs ===", flush=True)
             for epoch in range(1, target_epochs + 1):
                 epoch_start = time.time()
+                print(f"E{epoch}/{target_epochs} starting...", end="\r", flush=True)
                 beta = compute_kl_weight(
                     epoch,
                     target_epochs,
@@ -1112,7 +1118,7 @@ def run_experiment(
                     val_losses.append(vl_loss)
                     if vl_loss < best_val_loss:
                         best_val_loss = vl_loss
-                        best_state = copy.deepcopy(model.state_dict())
+                        best_state = {k: v.cpu() for k, v in model.state_dict().items()}
                         patience_counter = 0
                         marker = " *"
                     else:
