@@ -23,7 +23,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from tqdm import tqdm
 
 # Resolve imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,7 +55,7 @@ EXPERIMENT_PRESETS: Dict[str, Dict[str, Any]] = {
         "lr": 1e-3,
         "scheduler_patience": 5,
         "epochs_override": 200,
-        "batch_size_override": 16,
+        "batch_size_override": 0,
         "variational": True,
         "boost_channel": 0,
         "boost_factor": 1.5,
@@ -97,7 +96,7 @@ class Task1Dataset(Dataset):
         # Pre-compute ALL preprocessing once → __getitem__ becomes a pure tensor lookup
         raw = X[self.indices]  # shape: [N, C, H, W]
         processed = apply_task1_preprocessor(raw, preprocessor_params)  # numpy
-        self.data = torch.from_numpy(processed).float()  # [N, C, H, W] cached as tensor
+        self.data = torch.from_numpy(processed).float().contiguous(memory_format=torch.channels_last)  # H100-optimized layout
 
     def __len__(self) -> int:
         return len(self.y)
@@ -299,7 +298,7 @@ def train_epoch_reference_style(
 
     use_amp = device.type == "cuda" and scaler is not None
     for imgs, _ in loader:
-        imgs = imgs.to(device, non_blocking=True)
+        imgs = imgs.to(device, non_blocking=True, memory_format=torch.channels_last)
         optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast("cuda", enabled=use_amp):
             recons, mu, logvar = model(imgs)
@@ -310,12 +309,12 @@ def train_epoch_reference_style(
         if scaler is not None:
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
         epoch_loss += loss.item()
@@ -341,7 +340,7 @@ def eval_epoch_reference_style(
 
     use_amp = device.type == "cuda"
     for imgs, _ in loader:
-        imgs = imgs.to(device, non_blocking=True)
+        imgs = imgs.to(device, non_blocking=True, memory_format=torch.channels_last)
         with torch.amp.autocast("cuda", enabled=use_amp):
             recons, mu, logvar = model(imgs)
             loss, recon, kld = reference_vae_loss(recons, imgs, mu, logvar, beta=beta)
@@ -1033,9 +1032,10 @@ def run_experiment(
             if device.type == "cuda":
                 torch.backends.cudnn.benchmark = True
                 torch.set_float32_matmul_precision('high')  # Enable TF32 on H100/A100
-            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=pin, persistent_workers=True)
-            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=pin, persistent_workers=True)
-            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=pin, persistent_workers=True)
+            # Data is pre-cached as tensors — use num_workers=0 to avoid IPC overhead
+            train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=pin)
+            val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
+            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=pin)
 
             model = DeepFalconVAE(latent_dim=settings["latent_dim"]).to(device)
             if device.type == "cuda":
