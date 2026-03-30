@@ -95,6 +95,7 @@ class Task1Dataset(Dataset):
         self.y = torch.from_numpy(y[self.indices]).long()
         # Pre-compute ALL preprocessing once → __getitem__ becomes a pure tensor lookup
         raw = X[self.indices]  # shape: [N, C, H, W]
+        self.raw_viz = raw[:5].copy()  # Save a tiny subset for plotting
         processed = apply_task1_preprocessor(raw, preprocessor_params)  # numpy
         self.data = torch.from_numpy(processed).float().contiguous(memory_format=torch.channels_last)  # H100-optimized layout
         del raw, processed  # Free memory immediately
@@ -547,7 +548,7 @@ def plot_normalized_inputs(
     """Save a side-by-side view: raw detector images vs. normalized model inputs."""
     n_show = min(n_show, len(dataset))
     norm_imgs = torch.stack([dataset[i][0] for i in range(n_show)]).numpy()
-    raw_imgs = np.stack([dataset.X[dataset.indices[i]] for i in range(n_show)])
+    raw_imgs = dataset.raw_viz[:n_show]
 
     fig, axes = plt.subplots(n_show, 6, figsize=(22, n_show * 3), squeeze=False)
     fig.suptitle(
