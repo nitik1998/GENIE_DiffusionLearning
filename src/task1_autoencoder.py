@@ -1070,8 +1070,8 @@ def run_experiment(
 
             scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
 
-            pbar = tqdm(range(1, target_epochs + 1), desc=f"Training [{exp_name}]", unit="epoch")
-            for epoch in pbar:
+            print(f"=== Starting training [{exp_name}] for {target_epochs} epochs ===", flush=True)
+            for epoch in range(1, target_epochs + 1):
                 epoch_start = time.time()
                 beta = compute_kl_weight(
                     epoch,
