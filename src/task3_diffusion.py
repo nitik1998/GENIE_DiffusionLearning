@@ -397,6 +397,9 @@ def run_latent_diffusion(args: argparse.Namespace) -> None:
         logger.info("Loading VAE from %s", vae_ckpt)
         ckpt = torch.load(vae_ckpt, map_location=device, weights_only=False)
         state = ckpt.get("model_state_dict", ckpt)
+        # Strip torch.compile prefix if present
+        state = {k.replace('_orig_mod.', ''): v for k, v in state.items()}
+        
         # Detect architecture from state keys
         if "fc_mu.weight" in state:
             vae = DeepFalconVAE(in_channels=3, latent_dim=256).to(device)
