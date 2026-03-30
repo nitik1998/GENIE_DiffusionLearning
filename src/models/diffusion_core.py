@@ -40,13 +40,15 @@ class DDPM:
     def sample(self, shape):
         self.model.eval()
         x_t = torch.randn(shape, device=self.device)
+        ndim = len(shape)  # 2 for latent vectors, 4 for images
+        extra_dims = (1,) * (ndim - 1)  # (1,) for 2D, (1,1,1) for 4D
         for i in reversed(range(self.timesteps)):
             t = torch.full((shape[0],), i, device=self.device, dtype=torch.long)
             noise_pred = self.model(x_t, t)
             
-            alpha_t = self.alphas[t][:, None, None, None]
-            alpha_cumprod_t = self.alphas_cumprod[t][:, None, None, None]
-            beta_t = self.betas[t][:, None, None, None]
+            alpha_t = self.alphas[t].reshape(-1, *extra_dims)
+            alpha_cumprod_t = self.alphas_cumprod[t].reshape(-1, *extra_dims)
+            beta_t = self.betas[t].reshape(-1, *extra_dims)
             
             if i > 0:
                 noise = torch.randn_like(x_t)
