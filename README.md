@@ -49,11 +49,21 @@ On average only **~0.06%** of pixels are nonzero per image. This extreme sparsit
 
 **Objective:** Learn a compact 256-dimensional latent representation of jet images that faithfully reconstructs the sparse energy deposits across all three detector channels.
 
-**Model:** A 5-stage convolutional VAE (`JetVAE`) with transpose-convolution decoder. Uses a physics-informed `detector_reference` preprocessing:
-- **Tracks** — log-scaled with percentile boosting (compensates for extreme sparsity)
-- **ECAL / HCAL** — standard mean/std normalization mapped to [0, 1]
+### Choice of Model
+**Convolutional Variational Autoencoder (`JetVAE`)**: A 5-stage convolutional VAE with a transpose-convolution decoder. Chosen to learn a compact 256-dimensional latent representation of highly sparse jet images while retaining physics-realistic energy deposits across all channels. Uses a physics-informed `detector_reference` preprocessing (Tracks log-scaled, ECAL/HCAL standard-scaled).
 
-**Training:** 200 epochs · batch 512 · Adam (lr = 1e-3) · cosine annealing · KL warmup 100 epochs · nonzero pixels weighted 4×.
+### Loss Function
+**VAE Loss**: Composed of Reconstruction Error (MSE/L1) and Kullback-Leibler (KL) Divergence. The reconstruction loss is weighted heavily on active pixels (4×) to prevent the model from collapsing to a trivially all-black image.
+
+### Hyperparameters
+| Parameter | Value |
+| --------- | ----- |
+| **Epochs** | 200 |
+| **Batch Size** | 512 |
+| **Optimizer** | AdamW (lr = 1e-3) |
+| **Scheduler** | Cosine Annealing |
+| **Latent Dimension** | 256 |
+| **KL Warmup**| 100 epochs |
 
 ### Results
 
@@ -93,14 +103,28 @@ On average only **~0.06%** of pixels are nonzero per image. This extreme sparsit
 125×125×3 image → active pixel extraction → (η, φ) point cloud → k-NN graph (k=8) → GraphSAGE → quark/gluon
 ```
 
-**Features:**
+### Choice of Model
+**GraphSAGE (Graph Sample and Aggregate)**: Classifies jets using a k-NN graph representation built from the active pixels. Chosen because treating 99.9% empty active spaces as dense images is severely inefficient; Graph Neural Networks (GNNs) naturally capture the sparse, irregular topology and energy deposition cascades of quarks versus gluons.
 
+**Features:**
 | Type | Dimension | Components |
 |------|-----------|------------|
 | Node | 6 | η_norm · φ_norm · E_tracks · E_ECAL · E_HCAL · r_centroid |
 | Edge | 4 | Δη · Δφ · distance · ΔE |
 
-This discards the 99.94% background and operates directly on the physics-relevant active cells, following the graph-based approach from [[1]](#references).
+### Loss Function
+**Binary Cross-Entropy with Logits (BCEWithLogitsLoss)**: Computes the classification error while automatically applying positive class weights to account for dataset imbalance.
+
+### Hyperparameters
+| Parameter | Value |
+| --------- | ----- |
+| **Epochs** | 30 |
+| **Batch Size** | 64 (Auto-scaled) |
+| **Optimizer** | AdamW (lr = 1e-3) |
+| **Scheduler** | Cosine Annealing |
+| **k-NN edges (k)** | 8 |
+| **Node Hidden Dim** | 128 |
+| **Dropout** | 0.2 |
 
 ### Results
 
@@ -139,12 +163,23 @@ This discards the 99.94% background and operates directly on the physics-relevan
 1. **Encode** — freeze the Task 1 VAE; pre-compute latent vectors for all training data
 2. **Denoise** — train a time-conditioned residual MLP on the latent vectors using a standard DDPM noise schedule
 
-| Component | Details |
-|-----------|--------|
-| VAE (frozen) | Task 1 `JetVAE`, 256-dim latent |
-| Denoiser | 6 residual blocks · hidden 1024 · time_emb 128 |
-| Schedule | 1000 DDPM timesteps · linear β |
-| Training | 30 epochs · AdamW (lr = 1e-4) · cosine annealing |
+### Choice of Model
+**Latent Denoising Diffusion Probabilistic Model (DDPM)**: A time-conditioned residual MLP denoiser operating within the frozen 256-dimensional latent space of the Task 1 VAE. Chosen because latent diffusion is orders of magnitude faster and more memory-efficient than pixel-space diffusion for sparse datasets, while the VAE bottleneck encodes physical bounds inherently.
+
+### Loss Function
+**Mean Squared Error (MSE)**: Computes the step-wise MSE between the true added Gaussian noise and the noise predicted by the residual MLP denoiser at each specific forward timestep.
+
+### Hyperparameters
+| Parameter | Value |
+| --------- | ----- |
+| **Epochs** | 30 |
+| **Batch Size** | 256 |
+| **Optimizer** | AdamW (lr = 1e-4) |
+| **Scheduler** | Cosine Annealing |
+| **Timesteps** | 1000 |
+| **Noise Schedule** | Linear |
+| **Denoiser Hidden Dim** | 1024 |
+| **Time Embed Dim** | 128 |
 
 **Key design decision:** The VAE uses a custom `detector_reference` preprocessing. Task 3 loads the exact preprocessing parameters from the VAE checkpoint — guaranteeing the encoder receives correctly normalized data and the decoder produces physically meaningful outputs.
 
