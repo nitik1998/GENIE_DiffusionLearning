@@ -652,16 +652,23 @@ def plot_training_curves_reference_style(
     plt.legend()
     plt.grid(True, alpha=0.3)
 
-    plt.subplot(1, 2, 2)
+    ax1 = plt.subplot(1, 2, 2)
     if recon_losses:
-        plt.plot(recon_losses, "g-", label="Reconstruction Loss")
+        ax1.semilogy(recon_losses, "g-", linewidth=2, label="Reconstruction Loss")
+        ax1.set_ylabel("Reconstruction Loss", color="g")
+        ax1.tick_params(axis="y", labelcolor="g")
     if kl_losses:
-        plt.plot(kl_losses, "m-", label="KL Divergence Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Component Losses")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
+        ax2 = ax1.twinx()
+        ax2.semilogy(kl_losses, "m-", linewidth=2, label="KL Divergence Loss")
+        ax2.set_ylabel("KL Divergence Loss", color="m")
+        ax2.tick_params(axis="y", labelcolor="m")
+    ax1.set_xlabel("Epoch")
+    ax1.set_title("Component Losses (log scale)")
+    # Combine legends from both axes
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = (ax2.get_legend_handles_labels() if kl_losses else ([], []))
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+    ax1.grid(True, alpha=0.3)
 
     plt.tight_layout()
     path = os.path.join(out_dir, "training_curves.png")
