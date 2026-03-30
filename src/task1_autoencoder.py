@@ -12,6 +12,7 @@ import argparse
 import copy
 import json
 import shutil
+import time
 from typing import List, Dict, Any
 
 import numpy as np
@@ -1059,6 +1060,7 @@ def run_experiment(
 
             pbar = tqdm(range(1, target_epochs + 1), desc=f"Training [{exp_name}]", unit="epoch")
             for epoch in pbar:
+                epoch_start = time.time()
                 beta = compute_kl_weight(
                     epoch,
                     target_epochs,
@@ -1104,10 +1106,12 @@ def run_experiment(
 
                 gap = vl_loss / (tr_loss + 1e-10)
                 pbar.set_postfix(train=f"{tr_loss:.6f}", val=f"{vl_loss:.6f}", gap=f"{gap:.2f}x")
-                print(f"Epoch {epoch}/{target_epochs}:", flush=True)
+                epoch_elapsed = time.time() - epoch_start
+                print(f"Epoch {epoch}/{target_epochs} [{epoch_elapsed:.1f}s]:", flush=True)
                 print(f"  Train Loss: {tr_loss:.6f} (Recon: {tr_recon_loss:.6f}, KL: {tr_kl_loss:.6f})", flush=True)
                 print(f"  Val Loss: {vl_loss:.6f} (Recon: {vl_recon_loss:.6f}, KL: {vl_kl_loss:.6f})", flush=True)
-                print(f"  Learning Rate: {optimizer.param_groups[0]['lr']:.6f}, KL Weight: {beta:.6f}{marker}", flush=True)
+                remaining = epoch_elapsed * (target_epochs - epoch)
+                print(f"  LR: {optimizer.param_groups[0]['lr']:.6f}, KL Weight: {beta:.6f}, ETA: {remaining/60:.1f}min{marker}", flush=True)
 
 
                 if (epoch % 5 == 0) or epoch == target_epochs:

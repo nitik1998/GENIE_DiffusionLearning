@@ -42,6 +42,7 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score, confusion_matrix, f1_score
 from tqdm import tqdm
+import time
 from torch_geometric.data import Data, Batch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -692,6 +693,7 @@ def main(args: argparse.Namespace) -> None:
 
     pbar = tqdm(range(1, args.epochs + 1), desc="Training", unit="epoch")
     for epoch in pbar:
+        epoch_start = time.time()
         tr_loss = train_epoch(model, loaders["train"], optimizer, criterion, scaler, device)
         _, va_log, va_y = eval_epoch(model, loaders["val"], criterion, device)
         scheduler.step()
@@ -712,9 +714,11 @@ def main(args: argparse.Namespace) -> None:
             marker = ""
 
         pbar.set_postfix(loss=f"{tr_loss:.4f}", auc=f"{va_auc:.4f}")
+        epoch_elapsed = time.time() - epoch_start
+        remaining = epoch_elapsed * (args.epochs - epoch)
         print(
-            f"Epoch {epoch:03d}/{args.epochs} | Train Loss: {tr_loss:.4f} | "
-            f"Val AUC: {va_auc:.4f} | LR: {scheduler.get_last_lr()[0]:.1e}{marker}",
+            f"Epoch {epoch:03d}/{args.epochs} [{epoch_elapsed:.1f}s] | Train Loss: {tr_loss:.4f} | "
+            f"Val AUC: {va_auc:.4f} | LR: {scheduler.get_last_lr()[0]:.1e} | ETA: {remaining/60:.1f}min{marker}",
             flush=True,
         )
 
