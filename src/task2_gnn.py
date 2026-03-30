@@ -153,35 +153,34 @@ def evaluate_logistic_baseline(
 
 class JetGraphDataset(Dataset):
     """
-    Lazily builds graph representations from jet images.
+    Pre-builds and caches all graph representations from jet images.
 
-    This avoids materialising the full graph set in RAM up front, which is
-    important for full-dataset Colab runs.
+    Graphs are computed once during initialisation and stored in memory,
+    which avoids redundant KNN computation on every epoch. A tqdm progress
+    bar shows pre-processing progress so the user knows it hasn't stalled.
     """
 
     def __init__(
         self, X: np.ndarray, y: np.ndarray, knn_k: int = 8, tag: str = "data"
     ) -> None:
-        logger.info("Preparing %s graph dataset (n=%s, k=%d)...", tag, f"{len(y):,}", knn_k)
-        self.X = X
-        self.y = y
-        self.knn_k = knn_k
+        n = len(y)
+        logger.info("Pre-building %s graph dataset (n=%s, k=%d)...", tag, f"{n:,}", knn_k)
         self.channel_scales = compute_channel_scales(X, use_log1p=True)
-
-    @staticmethod
-    def _build_one(img: np.ndarray, label: int, knn_k: int) -> Data:
-        points = augment_point_features(image_to_pointcloud(img))
-        pts_tensor = torch.tensor(points, dtype=torch.float32)
-        return build_knn_graph(pts_tensor, label, k=knn_k)
+        self.graphs: List[Data] = []
+        for i in tqdm(range(n), desc=f"Building {tag} graphs", unit="graph", leave=False):
+            img = normalize_channels(
+                X[i : i + 1], self.channel_scales, use_log1p=True
+            )[0]
+            points = augment_point_features(image_to_pointcloud(img))
+            pts_tensor = torch.tensor(points, dtype=torch.float32)
+            self.graphs.append(build_knn_graph(pts_tensor, int(y[i]), k=knn_k))
+        logger.info("Finished %s: %d graphs cached in memory", tag, n)
 
     def __len__(self) -> int:
-        return len(self.y)
+        return len(self.graphs)
 
     def __getitem__(self, idx: int) -> Data:
-        img = normalize_channels(
-            self.X[idx : idx + 1], self.channel_scales, use_log1p=True
-        )[0]
-        return self._build_one(img, int(self.y[idx]), self.knn_k)
+        return self.graphs[idx]
 
 
 def collate_graphs(batch: List[Data]) -> Batch:
@@ -645,7 +644,7 @@ def main(args: argparse.Namespace) -> None:
         ds = JetGraphDataset(X[idx], y[idx], knn_k=gnn_cfg.knn_k, tag=split)
         loaders[split] = DataLoader(
             ds, batch_size=batch_size, shuffle=(split == "train"),
-            collate_fn=collate_graphs, num_workers=0,
+            collate_fn=collate_graphs, num_workers=4, persistent_workers=True,
         )
 
     # Model
